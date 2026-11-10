@@ -26,6 +26,9 @@ struct MacSettingsView: View {
             VStack(spacing: 0) {
                 DeskHeading("Name")
                 TextField("Name", text: $mac.name)
+                    // A plain label, not a login: no AutoFill (whose saved logins iOS unlocks with Face ID).
+                    .textContentType(nil)
+                    .autocorrectionDisabled()
                     .font(.system(size: 16))
                     .submitLabel(.done)
                     .padding(.horizontal, 17)

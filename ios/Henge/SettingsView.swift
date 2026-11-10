@@ -15,6 +15,8 @@ struct SettingsView: View {
     @AppStorage(EngineTuning.wfiSpinKey) private var wfiSpin = true
     @AppStorage(EngineTuning.superblocksKey) private var superblocks = false
     @AppStorage(EngineTuning.statsKey) private var engineStats = false
+    @AppStorage(EngineTuning.sharpScalingKey) private var sharpScaling = true
+    @AppStorage(EngineTuning.gpuOrderingKey) private var gpuOrdering = true
     @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB = JITBootstrap.defaultCodeCacheMB
 
     /// The second footer paragraph: how you click, given the selected input mode.
@@ -118,6 +120,13 @@ struct SettingsView: View {
                     Text("A bigger code cache empties less often and takes more memory; Henge picks 1.5 GB where there is room for it. Applies the next time Henge opens. If JIT stops turning on, choose 1 GB.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Text("macOS draws a frame for every refresh: 30 Hz leaves the most of the emulated CPU to apps, at the cost of choppier animation; 60 Hz is smoother. Faster disk writes order them without waiting for a full sync; a sudden power loss could lose the last ones. Quicker wake (on) keeps an idle CPU watching for work for 50 µs, so the Mac answers sooner, at some battery cost. Superblocks let translated code run past conditional branches. Changes apply the next time a Mac starts.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                .listRowBackground(Desk.card)
+                Section("Display") {
+                    Toggle("Sharp scaling", isOn: $sharpScaling)
+                    Toggle("Strict GPU ordering", isOn: $gpuOrdering)
+                    Text("Sharp scaling draws the Mac's screen at this screen's own resolution with a sharp filter; off, iPadOS stretches it, softer. Strict GPU ordering makes each piece of the Mac's drawing wait for the one before, which keeps glass panels such as Control Center clean; off is a little faster on the GPU. If something draws wrongly, turn one off at a time to find which. Applies the next time a Mac starts.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .listRowBackground(Desk.card)

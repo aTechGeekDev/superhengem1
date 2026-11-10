@@ -4,6 +4,13 @@ This fork collects the fixes from the community forks of [Leviidev/Henge](https:
 into one build, with a few additions, aimed above all at iPad (tested hardware: iPad Pro M4).
 Every change keeps its original author in the git history.
 
+## 0.2.1 (102)
+
+- Settings > Display: *Sharp scaling* and *Strict GPU ordering* switches, the two display changes of
+  this release, so a drawing problem can be traced to one of them (applies at the next Mac start;
+  the log says which are on).
+- The Mac's name field in its settings no longer offers AutoFill (iOS unlocks saved logins with Face ID).
+
 ## 0.2.1 (101)
 
 Updates over 0.2.0 (100) in place: same bundle identifier (com.henge.app), and the Macs, their files and the settings are kept.

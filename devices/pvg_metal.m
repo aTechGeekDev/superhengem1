@@ -197,6 +197,7 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     id<MTLEvent> gpu_event;
     uint64_t gpu_event_value;   /* the worker's: signalled by each command buffer it commits */
     uint64_t screen_ready;      /* screen_lock: the value the frame on screen needs */
+    int scale_mode;             /* HV_PVG_SCALE when this Mac started: 0 fit the layer, 1 native, 2 shrink only */
     id<MTLBuffer> readback;
     const char *shot;
     unsigned shots;
@@ -2418,13 +2419,8 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
    HV_PVG_SCALE=native: always the Mac's size (as before); =down: only shrink. The colour probe and the GPU test read
    the drawable back at the Mac's size, so they keep it too. */
 #define PRESENT_MAX_PIXELS (2732.0 * 2048.0)
-static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
-    static int native = -1, down_only;
-    if (native < 0) {
-        const char *s = getenv("HV_PVG_SCALE");
-        native = (s && !strcmp(s, "native")) || getenv("HV_PVG_GPU_TEST") || getenv("HV_COLOR_PROBE");
-        down_only = s && !strcmp(s, "down");
-    }
+static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H, int mode) {
+    int native = mode == 1, down_only = mode == 2;
     CGSize full = CGSizeMake(W, H);
     if (native || !W || !H) return full;
     CGSize b = target.bounds.size;
@@ -2533,7 +2529,7 @@ static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
             if (changed) continue;
             return;
         }
-        CGSize want = present_size(target, W, H);
+        CGSize want = present_size(target, W, H, scale_mode);
         if (!CGSizeEqualToSize(target.drawableSize, want)) {
             [CATransaction begin];
             [CATransaction setDisableActions:YES];
@@ -2769,6 +2765,14 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->worker = dispatch_queue_create("hengevm.pvg", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->presenter = dispatch_queue_create("hengevm.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->screen_lock = OS_UNFAIR_LOCK_INIT;
+        { /* read as each Mac starts, so Settings > Display applies without relaunching Henge */
+            const char *sc = getenv("HV_PVG_SCALE");
+            r->scale_mode = (sc && !strcmp(sc, "native")) || getenv("HV_PVG_GPU_TEST") || getenv("HV_COLOR_PROBE") ? 1
+                          : sc && !strcmp(sc, "down") ? 2 : 0;
+        }
+        fprintf(stderr, "hengevm: pvg-metal: screen scaling %s, GPU ordering %s\n",
+                r->scale_mode == 1 ? "off (native)" : r->scale_mode == 2 ? "shrink only" : "on",
+                getenv("HV_PVG_ORDER") && !atoi(getenv("HV_PVG_ORDER")) ? "off" : "on");
         const char *order = getenv("HV_PVG_ORDER");
         if (!order || atoi(order) != 0) {
             r->order_fence[0] = [dev newFence];

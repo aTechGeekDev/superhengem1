@@ -9,6 +9,8 @@ enum EngineTuning {
     static let wfiSpinKey = "henge.perf.wfiSpin"
     static let fastFlushKey = "henge.perf.fastFlush"
     static let statsKey = "henge.perf.engineStats"
+    static let sharpScalingKey = "henge.display.sharpScaling"
+    static let gpuOrderingKey = "henge.display.gpuOrdering"
 
     static let defaults: [String: String] = [
         // 60, not 120: every frame macOS draws is emulated and replayed, so 120 Hz
@@ -31,6 +33,9 @@ enum EngineTuning {
         if d.object(forKey: wfiSpinKey) as? Bool ?? true { env["HV_WFI_SPIN"] = "50" }
         if d.object(forKey: fastFlushKey) as? Bool == false { env["HV_FLUSH"] = "0" }
         if d.bool(forKey: statsKey) { env["HV_STATS"] = "10" }
+        // Display changes of 0.2.1, each switchable to tell which one a drawing problem comes from.
+        if d.object(forKey: sharpScalingKey) as? Bool == false { env["HV_PVG_SCALE"] = "native" } else { unsetenv("HV_PVG_SCALE") }
+        if d.object(forKey: gpuOrderingKey) as? Bool == false { env["HV_PVG_ORDER"] = "0" } else { unsetenv("HV_PVG_ORDER") }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         // GPU command trace: on while Documents/trace-on exists (it is checked every frame, so it can be toggled live).
         env["HV_PVG_TRACE_FILE"] = docs.appendingPathComponent("trace-on").path
