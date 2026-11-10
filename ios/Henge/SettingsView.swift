@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage(HardwareMouse.speedKey) private var mouseSpeed = 1.0
     @AppStorage(HardwareMouse.reverseKey) private var reverseScrolling = false
     @AppStorage(HardwareMouse.scrollSpeedKey) private var scrollSpeed = 0.3
+    @AppStorage(HardwareMouse.smoothScrollKey) private var smoothScroll = true
     @AppStorage(VolumeClicks.inputModeKey) private var inputMode = VolumeClicks.InputMode.touchscreen
     @AppStorage(VolumeClicks.modeKey) private var volumeMode = VolumeClicks.Mode.delayHold
     @AppStorage(VolumeClicks.swapKey) private var swapButtons = false
@@ -69,6 +70,7 @@ struct SettingsView: View {
                             Text("Pointer speed")
                             Slider(value: $mouseSpeed, in: 0.5...3)
                         }
+                        Toggle("Smooth scrolling", isOn: $smoothScroll)
                         Toggle("Reverse scrolling", isOn: $reverseScrolling)
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Scroll speed")
@@ -76,6 +78,8 @@ struct SettingsView: View {
                         }
                         Toggle("Swap physical right and middle buttons", isOn: $swapMouseButtons)
                         Text("Only enable this if your physical mouse's right and middle buttons are reversed in the Mac. Touch controls stay unchanged. Restart the Mac session to apply.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Text("Smooth scrolling hands a trackpad's two-finger scrolling to the Mac as a trackpad's, so it scrolls smoothly and coasts like a real Mac; off, it scrolls in a mouse wheel's steps. The right button is a real right-click: two fingers clicking the Mac's trackpad, its default secondary click.")
                             .font(.footnote).foregroundStyle(.secondary)
                         Text("A Magic Keyboard or a Bluetooth mouse moves the Mac's pointer. Pointer speed changes apply the next time a Mac starts; scroll speed changes apply immediately.")
                             .font(.footnote).foregroundStyle(.secondary)

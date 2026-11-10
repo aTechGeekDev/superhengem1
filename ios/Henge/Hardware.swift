@@ -169,6 +169,7 @@ final class HardwareMouse {
     static let speedKey = "henge.mouse.speed"
     static let reverseKey = "henge.mouse.reverse"
     static let scrollSpeedKey = "henge.mouse.scrollSpeed"
+    static let smoothScrollKey = "henge.mouse.smoothScroll"
 
     private var observers: [NSObjectProtocol] = []
     private var mice: [GCMouse] = []
@@ -179,6 +180,15 @@ final class HardwareMouse {
     private var reverse = false
     private var scrollsLogged = 0 // the first few, to see what a device's raw values look like
     private var lastScrollFirst: Float = 0, lastScrollSecond: Float = 0
+    private var smooth = true
+    /* Smooth scrolling: two fingers on the emulated Magic Trackpad 2, where they are (sensor units) and when they lift. */
+    private var scrolling = false
+    private var fingerX = 0.0, fingerY = 0.0
+    private var lift: DispatchWorkItem?
+    private static let scrollFingers: (Int32, Int32) = (12, 13) /* the touchscreen's are 1-5, right-click's 14-15 */
+    private static let fingerGap = 900.0 /* about 18 mm apart, as two fingers rest */
+    private static let edge = 160.0
+    private static let sensorW = 8134.0, sensorH = 5206.0 /* the Magic Trackpad 2 sensor, as Trackpad.swift (HV_TP_SENSOR_*) */
 
     func start() {
         let defaults = UserDefaults.standard
@@ -191,6 +201,8 @@ final class HardwareMouse {
         HengeLog.log("input", "physical mouse: swap right/middle \(swapButtons ? "on" : "off")")
         lastScrollFirst = 0
         lastScrollSecond = 0
+        smooth = defaults.object(forKey: Self.smoothScrollKey) as? Bool ?? true
+        HengeLog.log("input", "hardware scrolling: \(smooth ? "smooth (trackpad fingers)" : "wheel")")
         GCMouse.mice().forEach(attach)
         observers.append(NotificationCenter.default.addObserver(forName: .GCMouseDidConnect, object: nil, queue: .main) { [weak self] note in
             if let mouse = note.object as? GCMouse { self?.attach(mouse) }
@@ -211,6 +223,7 @@ final class HardwareMouse {
 
     func stop() {
         PointerLock.set(false)
+        endScroll()
         releaseButtons()
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
@@ -272,6 +285,10 @@ final class HardwareMouse {
         let horizontalChanged = second != lastScrollSecond
         lastScrollFirst = first
         lastScrollSecond = second
+        if smooth && henge_vm_trackpad_ready() != 0 {
+            fingerScroll(vertical: verticalChanged ? first : 0, horizontal: horizontalChanged ? second : 0, raw: (first, second))
+            return
+        }
         let mostlyVertical = abs(first) > 2 * abs(second)
         let mostlyHorizontal = abs(second) > 2 * abs(first)
         let verticalRaw = verticalChanged && !mostlyHorizontal ? -first : 0
@@ -289,6 +306,71 @@ final class HardwareMouse {
         }
         if horizontal != 0 || vertical != 0 { henge_vm_mouse_scroll(horizontal, vertical) }
     }
+
+    /// Scrolling as a Mac's own trackpad does it: two fingers moving on the emulated Magic Trackpad 2, so macOS scrolls
+    /// pixel by pixel, with its own momentum and rubber band, instead of a wheel's steps. Fingers go down with the first
+    /// movement, on the side of the pad they move away from (room for a long swipe), follow every movement, and lift
+    /// 50 ms after the last (so macOS sees the speed at lift-off and coasts). One that reaches the pad's edge lifts and
+    /// goes down again on the other side, as a hand does. The directions match the wheel's: wheel up is fingers up.
+    private func fingerScroll(vertical: Float, horizontal: Float, raw: (Float, Float)) {
+        guard vertical.isFinite, horizontal.isFinite, vertical != 0 || horizontal != 0 else { return }
+        let configured = UserDefaults.standard.object(forKey: Self.scrollSpeedKey) == nil
+            ? 0.3 : UserDefaults.standard.double(forKey: Self.scrollSpeedKey)
+        let scale = configured.isFinite ? min(max(configured, 0.1), 1.5) : 0.3
+        let k = 40 * scale * (reverse ? -1 : 1) /* sensor units per GameController unit: 12 at the default speed */
+        let dx = -Double(horizontal) * k, dy = Double(vertical) * k
+        let ts = Self.nowMs()
+        if !scrolling { beginScroll(dx, dy, ts) }
+        var x = fingerX + dx, y = fingerY + dy
+        let half = Self.fingerGap / 2
+        if x < Self.edge + half || x > Self.sensorW - Self.edge - half || y < Self.edge || y > Self.sensorH - Self.edge {
+            endScroll(ts)
+            beginScroll(dx, dy, ts &+ 1)
+            x = fingerX + dx
+            y = fingerY + dy
+        }
+        fingerX = x
+        fingerY = y
+        let (a, b) = Self.scrollFingers
+        henge_vm_touch(a, 1, Int32(x - half), Int32(y), ts &+ 2)
+        henge_vm_touch(b, 1, Int32(x + half), Int32(y), ts &+ 2)
+        henge_vm_touch_frame(ts &+ 2)
+        if scrollsLogged < 24 {
+            scrollsLogged += 1
+            HengeLog.log("input", "scroll raw: \(raw.0), \(raw.1); fingers by \(Int(dx)), \(Int(dy)) to \(Int(x)),\(Int(y))")
+        }
+        lift?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.endScroll() }
+        lift = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: item)
+    }
+
+    /// Two fingers down where a movement of (dx, dy) has the most room.
+    private func beginScroll(_ dx: Double, _ dy: Double, _ ts: UInt32) {
+        let half = Self.fingerGap / 2
+        let left = Self.edge + half + 100, right = Self.sensorW - Self.edge - half - 100
+        let top = Self.edge + 100, bottom = Self.sensorH - Self.edge - 100
+        fingerX = abs(dx) < 1 ? Self.sensorW / 2 : dx > 0 ? left : right
+        fingerY = abs(dy) < 1 ? Self.sensorH / 2 : dy > 0 ? top : bottom
+        let (a, b) = Self.scrollFingers
+        henge_vm_touch(a, 0, Int32(fingerX - half), Int32(fingerY), ts)
+        henge_vm_touch(b, 0, Int32(fingerX + half), Int32(fingerY), ts)
+        scrolling = true
+    }
+
+    private func endScroll(_ ts: UInt32? = nil) {
+        lift?.cancel()
+        lift = nil
+        guard scrolling else { return }
+        scrolling = false
+        let (a, b) = Self.scrollFingers
+        let t = ts ?? Self.nowMs()
+        henge_vm_touch(a, 2, 0, 0, t)
+        henge_vm_touch(b, 2, 0, 0, t)
+    }
+
+    /// The touch reports' clock: ms of uptime, as UITouch timestamps (the touchscreen's fingers) count.
+    private static func nowMs() -> UInt32 { UInt32(truncatingIfNeeded: Int(CACurrentMediaTime() * 1000)) }
 
     private static func wheelUnits(_ value: Float, scale: Float) -> Int32 {
         guard value.isFinite else { return 0 }

@@ -4,6 +4,24 @@ This fork collects the fixes from the community forks of [Leviidev/Henge](https:
 into one build, with a few additions, aimed above all at iPad (tested hardware: iPad Pro M4).
 Every change keeps its original author in the git history.
 
+## 0.2.1 (104)
+
+- **Magic Keyboard trackpad scrolls like a Mac's.** Two-finger scrolling went to macOS as mouse-wheel
+  steps (a square-root curve, capped), so it jumped, never coasted and never rubber-banded. It now
+  goes as two fingers moving on the emulated Magic Trackpad 2, so macOS's own trackpad scrolling does
+  the rest: pixel-smooth, with its momentum and bounce. The fingers go down on the side of the pad
+  they move away from, follow each movement, and lift 50 ms after the last; one that reaches the
+  pad's edge lifts and goes down again, as a hand does. Settings > Mouse and Trackpad > *Smooth
+  scrolling* (on) goes back to the wheel; Scroll speed and Reverse scrolling apply to both. Until
+  macOS has switched the pad to multitouch, scrolling is the wheel's.
+- **A real right-click.** The right button (a mouse's, the Magic Keyboard trackpad's two-finger
+  click, the touchscreen's two-finger tap, the volume button) was a Control-click with 50 ms waits
+  on either side: late, and not a right-click to every app. It is now two fingers clicking the
+  emulated trackpad, macOS's own secondary click (on by default in macOS). Before the pad is in
+  multitouch, or with `HV_RIGHT_CLICK=ctrl`, the Control-click as before.
+- The pad's own clock for clicks counted the time the iPad slept and touches don't: after a sleep,
+  reports were squeezed 1 ms apart and macOS read flicks as huge speeds. Both now count uptime.
+
 ## 0.2.1 (103)
 
 - **No Face ID prompt for iCloud when a Mac's settings open.** The page's *Move Out of Henge…* picker

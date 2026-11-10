@@ -1027,10 +1027,22 @@ static int tp_build_report(HvXhci *x, uint8_t *out) {
    which is what sends scroll inertia flying on release. tp_now_ms is only the fallback
    for the physical button, which has no sample clock. */
 static uint32_t tp_now_ms(void) {
+    /* The touch samples' clock: UITouch.timestamp and CACurrentMediaTime count uptime, which stops while the device
+       sleeps. CLOCK_MONOTONIC does not stop on Darwin, so after a sleep a click stamped with it was far ahead of the
+       touches, every later report was clamped to 1 ms after the one before (see tp_queue), and the guest read that
+       as a huge finger speed: inertia sent pages flying. */
     struct timespec ts;
+#ifdef __APPLE__
+    clock_gettime(CLOCK_UPTIME_RAW, &ts);
+#else
     clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
     return (uint32_t)((uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000);
 }
+
+uint32_t hv_xhci_tp_now_ms(void) { return tp_now_ms(); }
+
+int hv_xhci_tp_ready(HvXhci *x) { return x && __atomic_load_n(&x->tp_mt, __ATOMIC_RELAXED); }
 
 /* Queue the current state as a report, stamped with the touch sample's clock (ms);
    ts_ms 0 falls back to the current time (the physical button). */

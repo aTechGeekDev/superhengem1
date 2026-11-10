@@ -447,7 +447,37 @@ void hv_vm_stop(void) {
     hv_machine_halt(&m, HV_HALT_HOST);
 }
 
-/* macOS's virtio mouse driver drops BTN_RIGHT, so the right button is a Control-click, with the right
+/* The right button is a two-finger click on the Magic Trackpad 2, macOS's own secondary click (on by default): a real
+   right-click in every app, at once. Two fingers rest on the pad, then it clicks; let go, then they lift. Before the
+   guest has switched the pad to multitouch (its login window can come first), or with HV_RIGHT_CLICK=ctrl, the old way.
+   Ids 14 and 15: the touchscreen's fingers are 1-5 and hardware scrolling's 12-13. */
+#define RIGHT_FINGER_A 14
+#define RIGHT_FINGER_B 15
+static int right_on_pad; /* pointer queue only: the press now down went to the pad */
+
+static int right_via_pad(void) {
+    static int ctrl = -1;
+    if (ctrl < 0) ctrl = getenv("HV_RIGHT_CLICK") && !strcmp(getenv("HV_RIGHT_CLICK"), "ctrl");
+    return !ctrl && board.usb && hv_xhci_tp_ready(board.usb);
+}
+
+static void right_pad(int down) {
+    uint32_t t = hv_xhci_tp_now_ms();
+    if (down) {
+        hv_xhci_touch(board.usb, RIGHT_FINGER_A, 0, HV_TP_SENSOR_X / 2 - 500, HV_TP_SENSOR_Y / 2, t);
+        hv_xhci_touch(board.usb, RIGHT_FINGER_B, 0, HV_TP_SENSOR_X / 2 + 500, HV_TP_SENSOR_Y / 2, t);
+        usleep(16000); /* resting a frame before the press, as fingers do */
+        hv_xhci_touch_button(board.usb, 1);
+    } else {
+        hv_xhci_touch_button(board.usb, 0);
+        usleep(16000);
+        t = hv_xhci_tp_now_ms();
+        hv_xhci_touch(board.usb, RIGHT_FINGER_A, 2, 0, 0, t);
+        hv_xhci_touch(board.usb, RIGHT_FINGER_B, 2, 0, 0, t);
+    }
+}
+
+/* macOS's virtio mouse driver drops BTN_RIGHT, so the fallback right button is a Control-click, with the right
    Control. The USB keyboard is read every 10 ms and the click goes over virtio, so Control goes down
    50 ms before the click and comes up 50 ms after it. The waits run on a serial queue that the pointer's
    moves and buttons all go through, so they stay in order and the caller (often the main thread) never
@@ -470,6 +500,8 @@ static void stop_pointer(void) {
     /* The bridge excludes new input. Finish a click already in progress and
        discard queued input before releasing the keyboard and mouse. */
     dispatch_sync(pointer_queue(), ^{
+        if (right_on_pad) right_pad(0);
+        right_on_pad = 0;
         left_user = left_click = left_sent = 0;
         os_unfair_lock_lock(&rctrl_lock);
         rctrl_user = rctrl_click = 0;
@@ -523,6 +555,9 @@ static void button_now(void *ctx) {
     if (button == 0) {
         left_user = down;
         left_update();
+    } else if (button == 1 && (down ? right_via_pad() && !right_on_pad && !left_click : right_on_pad)) {
+        right_on_pad = down;
+        right_pad(down);
     } else if (button == 1 && down != left_click) {
         if (down) {
             rctrl_hold(&rctrl_click, 1);
@@ -569,6 +604,8 @@ void hv_vm_touch(int id, int phase, int x, int y, uint32_t ts_ms) {
 void hv_vm_touch_frame(uint32_t ts_ms) { hv_xhci_touch_frame(board.usb, ts_ms); }
 
 void hv_vm_touch_button(int down) { hv_xhci_touch_button(board.usb, down); }
+
+int hv_vm_trackpad_ready(void) { return board.usb && hv_xhci_tp_ready(board.usb); }
 
 int hv_vm_pointer(int *x, int *y) {
     HvPvgLite *pvg = atomic_load_explicit(&display_pvg, memory_order_acquire);

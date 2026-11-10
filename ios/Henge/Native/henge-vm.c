@@ -313,6 +313,12 @@ void henge_vm_touch_frame(uint32_t ts_ms) {
     hv_vm_touch_frame(ts_ms);
     pthread_rwlock_unlock(&api_lock);
 }
+int henge_vm_trackpad_ready(void) {
+    if (!lock_running()) return 0;
+    int ready = hv_vm_trackpad_ready();
+    pthread_rwlock_unlock(&api_lock);
+    return ready;
+}
 void henge_vm_touch_button(int down) {
     if (!lock_running()) return;
     hv_vm_touch_button(down);

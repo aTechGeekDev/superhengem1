@@ -102,6 +102,10 @@ void hv_xhci_touch(HvXhci *x, int id, int phase, int px, int py, uint32_t ts_ms)
 void hv_xhci_touch_frame(HvXhci *x, uint32_t ts_ms);
 /* Any thread: the pad's full press (a click), down or up. */
 void hv_xhci_touch_button(HvXhci *x, int down);
+/* Whether the guest has switched the pad to multitouch, so fingers on it reach macOS's multitouch engine. */
+int hv_xhci_tp_ready(HvXhci *x);
+/* The clock touch reports are stamped with (ms of uptime, as UITouch.timestamp and CACurrentMediaTime count). */
+uint32_t hv_xhci_tp_now_ms(void);
 /* CPU thread: hand waiting reports to the guest. */
 void hv_xhci_poll(HvXhci *x);
 
