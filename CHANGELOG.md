@@ -25,6 +25,19 @@ Every change keeps its original author in the git history.
   `HV_PVG_SCALE=native` brings back the old way.
 - The renderer reads `HV_PVG_TALLY` and the surface dump settings once, not per resource of every
   exec, and keeps one buffer for the guest's command buffers instead of a zeroed allocation each.
+- **No more garbage in glass panels (Control Center, menus, notifications).** The guest's GPU work
+  reaches Metal as many objects over the same memory (views of a surface in other formats, the
+  render target and the texture a later pass samples, heap textures that can't be hazard-tracked
+  on iOS), and Metal orders work only by object: a blur could read the backdrop while the pass
+  drawing it was still running, and the screen could be shown while the panels drawn last over
+  everything were still being drawn. Each encoder of the replay now waits for the one before it
+  (two fences in turn), and the presenter waits on an event for the work of the frame it shows.
+  `HV_PVG_ORDER=0` turns both off.
+- A render pass whose store action the guest left Unknown (to set later in the pass, which isn't
+  replayed) now stores its pixels instead of Metal discarding them.
+- **iPhone screen sizes:** a Mac on iPhone was always 1920×1080. Mac settings now offer 900p
+  (1600×900, 30% fewer pixels) and 720p (1280×720, 56% fewer). Everything macOS draws is drawn by
+  the emulated CPUs and replayed on the GPU, so fewer pixels is faster everywhere.
 - The session no longer resets its screen layer's colour space every second (SwiftUI's update ran
   with each status refresh), and copies the log only while Details is open.
 

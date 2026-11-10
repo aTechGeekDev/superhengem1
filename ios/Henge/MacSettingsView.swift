@@ -5,6 +5,16 @@ struct MacSettingsView: View {
     @ObservedObject private var machines = Machines.shared
     @Environment(\.dismiss) private var dismiss
     @State private var mac: VirtualMac
+
+    /// The sizes offered for a Mac on iPhone, all 16:9 like the default.
+    private struct PhoneScreen: Identifiable {
+        let id: String, label: String, width: Int, height: Int
+    }
+    private static let phoneScreens = [
+        PhoneScreen(id: "1080", label: "1080p", width: 1920, height: 1080),
+        PhoneScreen(id: "900", label: "900p", width: 1600, height: 900),
+        PhoneScreen(id: "720", label: "720p", width: 1280, height: 720),
+    ]
     @State private var confirmDelete = false
     @State private var movingExport = false
     @AppStorage("henge.cpus") private var cpus = 4
@@ -51,6 +61,29 @@ struct MacSettingsView: View {
                 .padding(.horizontal, 17)
                 .padding(.vertical, 10)
                 .deskCard()
+
+                if !Device.isPad && Device.fittingScreen.height == 1080 {
+                    // A phone shows a 1920-pixel Mac in ~1200 pixels anyway, and every pixel macOS draws is drawn by
+                    // the emulated CPUs (text, images, web pages) and replayed on the GPU: fewer is faster everywhere.
+                    DeskHeading("Screen")
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker("Screen", selection: Binding(get: {
+                            Self.phoneScreens.first { $0.width == mac.screen.width && $0.height == mac.screen.height }?.id ?? "1080"
+                        }, set: { choice in
+                            mac.retina = false
+                            let pick = Self.phoneScreens.first { $0.id == choice } ?? Self.phoneScreens[0]
+                            (mac.screenWidth, mac.screenHeight) = (pick.width, pick.height)
+                            save()
+                        })) {
+                            ForEach(Self.phoneScreens) { Text($0.label).tag($0.id) }
+                        }
+                        .pickerStyle(.segmented)
+                        Text("\(mac.screen.width) × \(mac.screen.height). 900p draws 30% fewer pixels than 1080p, 720p 56% fewer: macOS and its apps run noticeably faster, with less on the screen at once. Changes apply the next time this Mac starts.")
+                            .font(.system(size: 13)).foregroundStyle(Desk.dim)
+                    }
+                    .padding(17)
+                    .deskCard()
+                }
 
                 if Device.fittingScreen.height != 1080 {
                     DeskHeading("Screen")

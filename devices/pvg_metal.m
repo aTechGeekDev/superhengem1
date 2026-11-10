@@ -187,6 +187,16 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     /* The worker's copy of the command buffer being decoded: one allocation kept, not a zeroed one per buffer. */
     uint8_t *cmd_scratch;
     size_t cmd_scratch_len;
+    /* Ordering (HV_PVG_ORDER=0: off). The guest's GPU work arrives as many Metal objects over the same memory: views
+       of one surface in other formats, a render target and the texture a later pass samples, heap textures that
+       cannot be hazard-tracked here. Metal orders work only by resource object, so a blur could read the backdrop
+       while the pass drawing it was still running (glass panels such as Control Center drew garbage). Every encoder
+       waits for the one before it through two fences, in turn; the screen waits for the work of the frame it shows. */
+    id<MTLFence> order_fence[2];
+    uint32_t order_turn;
+    id<MTLEvent> gpu_event;
+    uint64_t gpu_event_value;   /* the worker's: signalled by each command buffer it commits */
+    uint64_t screen_ready;      /* screen_lock: the value the frame on screen needs */
     id<MTLBuffer> readback;
     const char *shot;
     unsigned shots;
@@ -419,6 +429,31 @@ static MTLTextureDescriptor *descriptor_v2(const uint8_t *d) {
     return o->object;
 }
 @end
+
+/* A new encoder of the replay's: it starts after the one encoded before it has finished (see order_fence). */
+static void order_begin(HvReplay *r, id e) {
+    if (!e || !r->order_fence[0]) return;
+    id<MTLFence> f = r->order_fence[r->order_turn & 1];
+    if ([e conformsToProtocol:@protocol(MTLRenderCommandEncoder)])
+        [(id<MTLRenderCommandEncoder>)e waitForFence:f beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    else if ([e conformsToProtocol:@protocol(MTLComputeCommandEncoder)]) [(id<MTLComputeCommandEncoder>)e waitForFence:f];
+    else [(id<MTLBlitCommandEncoder>)e waitForFence:f];
+}
+
+/* Its end: the next encoder waits for this one through the other fence (one encoder never waits for and
+   updates the same fence). */
+static void order_end(HvReplay *r, id e) {
+    if (!e) return;
+    if (r->order_fence[0]) {
+        id<MTLFence> f = r->order_fence[(r->order_turn + 1) & 1];
+        if ([e conformsToProtocol:@protocol(MTLRenderCommandEncoder)])
+            [(id<MTLRenderCommandEncoder>)e updateFence:f afterStages:MTLRenderStageFragment | MTLRenderStageTile]; /* a pass may end on a tile dispatch */
+        else if ([e conformsToProtocol:@protocol(MTLComputeCommandEncoder)]) [(id<MTLComputeCommandEncoder>)e updateFence:f];
+        else [(id<MTLBlitCommandEncoder>)e updateFence:f];
+        r->order_turn++;
+    }
+    [(id<MTLCommandEncoder>)e endEncoding];
+}
 
 @implementation HvReplay
 
@@ -1171,7 +1206,7 @@ static BOOL has_guest_pages(HvObject *o) {
     id<MTLBuffer> copy = guest_copy(self, task, o);
     if (!copy || !has_guest_pages(o)) return;
     if (o->heap_whole) {
-        if (!*blit) *blit = [cb blitCommandEncoder];
+        if (!*blit) order_begin(self, *blit = [cb blitCommandEncoder]);
         NSUInteger bytes = MIN(copy.length, o->heap_whole.length);
         if (down) [*blit copyFromBuffer:o->heap_whole sourceOffset:0 toBuffer:copy destinationOffset:0 size:bytes];
         else [*blit copyFromBuffer:copy sourceOffset:0 toBuffer:o->heap_whole destinationOffset:0 size:bytes];
@@ -1180,7 +1215,7 @@ static BOOL has_guest_pages(HvObject *o) {
     id<MTLTexture> tex = o->object;
     if (!tex || !o->tex_layout || tex.sampleCount > 1 || tex.isFramebufferOnly) return;
     NSUInteger faces = tex.textureType == MTLTextureTypeCube || tex.textureType == MTLTextureTypeCubeArray ? 6 : 1;
-    if (!*blit) *blit = [cb blitCommandEncoder];
+    if (!*blit) order_begin(self, *blit = [cb blitCommandEncoder]);
     for (uint32_t s = 0; s < o->tex_slices * faces; s++)
         for (uint32_t m = 0; m < o->tex_mips; m++) {
             const uint8_t *mip = o->tex_layout + m * 36;
@@ -1215,7 +1250,7 @@ static BOOL has_guest_pages(HvObject *o) {
         [self page:o toGuest:YES task:task blit:&blit commandBuffer:cb];
         o->guest_stale = NO;
     }
-    [blit endEncoding];
+    order_end(self, blit);
     if (cb) {
         [self commit:cb channel:0 stamp:0 complete:NO];
         synced++;
@@ -1274,6 +1309,15 @@ typedef struct {
         double col[4];
         memcpy(col, r.p + o + 0x1c, sizeof col);
         c.clearColor = MTLClearColorMake(col[0], col[1], col[2], col[3]);
+    }
+    /* A store action left Unknown is one the guest sets later in the pass (setColorStoreAction and the like); with
+       none of those replayed it stays Unknown, which Metal takes as don't-care: the pass's pixels were thrown away and
+       whatever was in the tile memory showed instead. Keep them: storing is always correct, if not always needed. */
+    for (int i = -2; i < 8; i++) {
+        MTLRenderPassAttachmentDescriptor *a = i == -2 ? (MTLRenderPassAttachmentDescriptor *)d.depthAttachment
+                                              : i == -1 ? (MTLRenderPassAttachmentDescriptor *)d.stencilAttachment : d.colorAttachments[i];
+        if (a.texture && a.storeAction == MTLStoreActionUnknown)
+            a.storeAction = a.resolveTexture ? MTLStoreActionStoreAndMultisampleResolve : MTLStoreActionStore;
     }
     /* Memoryless and resolve store actions want the matching textures; a pass with none stays dontCare. */
     for (int i = 0; i < 8; i++) {
@@ -1358,6 +1402,7 @@ typedef struct {
         fprintf(stderr, "trace: pass c0 ref %u %lux%lu fmt %lu load %lu store %lu clear %.2f %.2f %.2f %.2f surface %s heap %d\n", U32(0x4c), (unsigned long)c0.width, (unsigned long)c0.height, (unsigned long)c0.pixelFormat, (unsigned long)d.colorAttachments[0].loadAction, (unsigned long)d.colorAttachments[0].storeAction, cc.red, cc.green, cc.blue, cc.alpha, co && co->surface ? "yes" : "no", c0.heap != nil);
     }
     id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:d];
+    order_begin(self, e);
     if (!e) {
         NSMutableString *m = [NSMutableString stringWithString:@"no render encoder:"];
         for (int i = 0; i < 8; i++) {
@@ -2026,6 +2071,7 @@ typedef struct {
     HvPvgLite *l = lite;
     atomic_fetch_add(&inflight, 1);
     dispatch_group_enter(completions);
+    if (gpu_event) [cb encodeSignalEvent:gpu_event value:++gpu_event_value]; /* the presenter waits on this (screen_ready) */
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         if (done.error) {
             self->failed++;
@@ -2086,7 +2132,7 @@ typedef struct {
         }
         if (res[i * 2 + 1] & 4) sync_after = YES;
     }
-    [blit endEncoding];
+    order_end(self, blit);
     /* Bit 1: this exec writes it, so the guest's copy is out of date from here on. Never
        upload that over what the GPU drew: mostly zeros, which show as black boxes. */
     for (uint32_t i = 0; i < nres; i++)
@@ -2119,7 +2165,7 @@ typedef struct {
         }
         uint32_t type = info & 0xff, cont = (info >> 8) & 0xff, more = (info >> 16) & 0xff;
         if (p + seglen < end) end = p + seglen;
-        if (!cont && e) { [e endEncoding]; e = nil; }
+        if (!cont && e) { order_end(self, e); e = nil; }
         if (type > 2) {
             const uint8_t *q = p;
             while (q + 8 <= end) {
@@ -2132,8 +2178,8 @@ typedef struct {
             }
             continue;
         }
-        if (!e && type == 1) e = [cb computeCommandEncoder], pipeline_set = NO;
-        if (!e && type == 2) e = [cb blitCommandEncoder];
+        if (!e && type == 1) order_begin(self, e = [cb computeCommandEncoder]), pipeline_set = NO;
+        if (!e && type == 2) order_begin(self, e = [cb blitCommandEncoder]);
         etype = type;
         @try {
             while (p + 8 <= end) {
@@ -2148,7 +2194,7 @@ typedef struct {
                     else if (tag == 36 && size >= 12) pre_tile_w = U32(0) & 0xffff, pre_tile_h = U32(0) >> 16;
                     else if (tag == 33 || tag == 32) [self complain:[NSString stringWithFormat:@"pass description %u (%u bytes) not done", tag, size]];
                 } else if (etype == 0 && tag == 26) {
-                    if (e) [e endEncoding];
+                    if (e) order_end(self, e);
                     e = [self beginPass:r task:task commandBuffer:cb];
                     pipeline_set = NO, tess_factors = NO;
                 } else if (e) {
@@ -2162,9 +2208,9 @@ typedef struct {
             [self complain:[NSString stringWithFormat:@"exception: %@", x.reason]];
             failed++;
         }
-        if (!more && e) { [e endEncoding]; e = nil; }
+        if (!more && e) { order_end(self, e); e = nil; }
     }
-    if (e) [e endEncoding];
+    if (e) order_end(self, e);
     if (sync_after) { /* the guest wants these back as soon as this is done */
         id<MTLBlitCommandEncoder> back = nil;
         for (uint32_t i = 0; i < nres; i++) {
@@ -2174,7 +2220,7 @@ typedef struct {
             [self page:o toGuest:YES task:task blit:&back commandBuffer:cb];
             o->guest_stale = NO;
         }
-        [back endEncoding];
+        order_end(self, back);
     }
     double t1 = now_seconds();
     [self commit:cb channel:ch stamp:stamp complete:YES];
@@ -2421,6 +2467,7 @@ static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
     }
     os_unfair_lock_lock(&screen_lock);
     screen_tex = surface->scanout, screen_half = half, screen_w = surface->surface_w, screen_h = surface->surface_h;
+    screen_ready = gpu_event_value; /* everything the guest drew up to its swap, committed by now */
     screen_dirty = YES;
     [self kickPresenter:YES];
     os_unfair_lock_unlock(&screen_lock);
@@ -2504,6 +2551,7 @@ static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
         os_unfair_lock_lock(&screen_lock);
         tex = screen_tex, half = screen_half, ctex = cursor_tex, shown = cursor_shown;
         cw0 = cursor_w, ch0 = cursor_h, hx = cursor_hot_x, hy = cursor_hot_y;
+        uint64_t ready = screen_ready;
         BOOL same_target = layer_generation == generation && layer == target;
         BOOL same_size = screen_w == W && screen_h == H;
         if (same_target && same_size) {
@@ -2518,6 +2566,10 @@ static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
             continue;
         }
         id<MTLCommandBuffer> cb = [queue commandBuffer];
+        /* The screen is read through its own texture object, which Metal does not see the guest's passes write:
+           without this the frame could be shown while its last passes (the menus, panels and glass drawn over
+           everything else) were still being drawn. */
+        if (gpu_event && ready) [cb encodeWaitForEvent:gpu_event value:ready];
         MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = drawable.texture;
         pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
@@ -2690,6 +2742,13 @@ HvPvgMetal *hv_pvg_metal_create(HvPvgLite *lite) {
         r->worker = dispatch_queue_create("hengevm.pvg", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->presenter = dispatch_queue_create("hengevm.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         r->screen_lock = OS_UNFAIR_LOCK_INIT;
+        const char *order = getenv("HV_PVG_ORDER");
+        if (!order || atoi(order) != 0) {
+            r->order_fence[0] = [dev newFence];
+            r->order_fence[1] = [dev newFence];
+            if (!r->order_fence[0] || !r->order_fence[1]) r->order_fence[0] = r->order_fence[1] = nil;
+            r->gpu_event = [dev newEvent];
+        }
         r->tasks = [NSMutableDictionary new];
         r->mapped_textures = [NSMutableDictionary new];
         r->surfaces = [NSMutableDictionary new];
