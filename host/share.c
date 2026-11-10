@@ -603,8 +603,10 @@ static const char install_script[] =
     "echo 'Henge is set up. You can close this window.'\n";
 
 /* What "curl -s http://10.0.2.4/.henge/lighten | sh" runs in macOS: less background work and drawing, for a Mac
-   whose CPUs are emulated: less animation and drawing, and the system part (update checks, Time Machine) with the
-   Mac's password once. Apple's own background agents can't be turned off with System Integrity Protection on
+   whose CPUs are emulated: less animation and drawing, and the system part with the Mac's password once (sudo asks
+   on the terminal, not on stdin): Spotlight indexing, the biggest background load after a login and whenever files
+   change (mds_stores and mdworker reading and parsing every file), Time Machine, automatic update checks and
+   downloads, and Power Nap. All of these can be changed with System Integrity Protection on. Apple's own background agents can't be turned off with System Integrity Protection on
    (launchctl disable of gui/ agents did not survive a log out on the Mac bench, 2026-11-08), so it doesn't try.
    Reduce Motion and Reduce Transparency need System Settings (a script can't write com.apple.universalaccess).
    Nothing reads the script's own stdin (sh is reading the script from it). */
@@ -618,6 +620,15 @@ static const char lighten_script[] =
     "defaults write -g NSAutomaticWindowAnimationsEnabled -bool false </dev/null\n"
     "defaults write -g NSWindowResizeTime -float 0.001 </dev/null\n"
     "defaults write com.apple.dock launchanim -bool false </dev/null\n"
+    /* Every animated frame is drawn by the emulated CPUs: scrolling, Finder, Quick Look, Mission Control, Launchpad. */
+    "defaults write -g NSScrollAnimationEnabled -bool false </dev/null\n"
+    "defaults write -g QLPanelAnimationDuration -float 0 </dev/null\n"
+    "defaults write com.apple.finder DisableAllAnimations -bool true </dev/null\n"
+    "defaults write com.apple.dock expose-animation-duration -float 0.1 </dev/null\n"
+    "defaults write com.apple.dock springboard-show-duration -float 0 </dev/null\n"
+    "defaults write com.apple.dock springboard-hide-duration -float 0 </dev/null\n"
+    "defaults write com.apple.dock mineffect -string scale </dev/null\n"
+    "defaults write com.apple.dock autohide-delay -float 0 </dev/null\n"
     "defaults -currentHost write com.apple.screensaver idleTime -int 0 </dev/null\n"
     "defaults write com.apple.WindowManager StandardHideWidgets -int 1 </dev/null\n"
     "defaults write com.apple.WindowManager StageManagerHideWidgets -int 1 </dev/null\n"
@@ -634,6 +645,21 @@ static const char lighten_script[] =
     "JS\n"
     "fi\n"
     "killall Dock 2>/dev/null\n"
+    "killall Finder 2>/dev/null\n"
+    "echo 'Next, background work. Your Mac password is asked for once (Return three times to skip).'\n"
+    "if sudo -v; then\n"
+    "  sudo mdutil -a -i off >/dev/null 2>&1 </dev/null && echo '  Spotlight indexing: off (Spotlight finds less; apps still open from Launchpad, the Dock and Finder).'\n"
+    "  sudo tmutil disable >/dev/null 2>&1 </dev/null && echo '  Time Machine: off.'\n"
+    "  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled -bool false </dev/null\n"
+    "  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool false </dev/null\n"
+    "  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate ConfigDataInstall -bool false </dev/null\n"
+    "  sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool false </dev/null\n"
+    "  sudo defaults write /Library/Preferences/com.apple.commerce AutoUpdate -bool false </dev/null\n"
+    "  echo '  Automatic update checks and downloads: off (Software Update still works when you open it).'\n"
+    "  sudo pmset -a powernap 0 >/dev/null 2>&1 </dev/null\n"
+    "else\n"
+    "  echo '  Skipped: Spotlight indexing, Time Machine and update checks stay as they were.'\n"
+    "fi\n"
     "echo 'Done: window and Dock animations, desktop widgets, the screen saver and a moving wallpaper are off.'\n"
     "echo 'Also turn on Reduce Motion and Reduce Transparency: System Settings, Accessibility.'\n"
     "echo 'Log out and back in for all of it to take effect. To undo: curl -s http://" HV_SHARE_ADDR "/.henge/unlighten | sh'\n";
@@ -646,10 +672,29 @@ static const char unlighten_script[] =
     "defaults delete -g NSAutomaticWindowAnimationsEnabled 2>/dev/null </dev/null\n"
     "defaults delete -g NSWindowResizeTime 2>/dev/null </dev/null\n"
     "defaults delete com.apple.dock launchanim 2>/dev/null </dev/null\n"
+    "defaults delete -g NSScrollAnimationEnabled 2>/dev/null </dev/null\n"
+    "defaults delete -g QLPanelAnimationDuration 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.finder DisableAllAnimations 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.dock expose-animation-duration 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.dock springboard-show-duration 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.dock springboard-hide-duration 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.dock mineffect 2>/dev/null </dev/null\n"
+    "defaults delete com.apple.dock autohide-delay 2>/dev/null </dev/null\n"
     "defaults -currentHost delete com.apple.screensaver idleTime 2>/dev/null </dev/null\n"
     "defaults write com.apple.WindowManager StandardHideWidgets -int 0 </dev/null\n"
     "defaults write com.apple.WindowManager StageManagerHideWidgets -int 0 </dev/null\n"
     "killall Dock 2>/dev/null\n"
+    "killall Finder 2>/dev/null\n"
+    "echo 'Spotlight indexing, Time Machine and update checks back on: your Mac password is asked for once (Return three times to skip).'\n"
+    "if sudo -v; then\n"
+    "  sudo mdutil -a -i on >/dev/null 2>&1 </dev/null\n"
+    "  sudo tmutil enable >/dev/null 2>&1 </dev/null\n"
+    "  sudo defaults delete /Library/Preferences/com.apple.SoftwareUpdate AutomaticCheckEnabled 2>/dev/null </dev/null\n"
+    "  sudo defaults delete /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload 2>/dev/null </dev/null\n"
+    "  sudo defaults delete /Library/Preferences/com.apple.SoftwareUpdate ConfigDataInstall 2>/dev/null </dev/null\n"
+    "  sudo defaults delete /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall 2>/dev/null </dev/null\n"
+    "  sudo defaults delete /Library/Preferences/com.apple.commerce AutoUpdate 2>/dev/null </dev/null\n"
+    "fi\n"
     "echo 'Back as it was, apart from the wallpaper (System Settings, Wallpaper).'\n"
     "echo 'Log out and back in (or restart) for all of it to take effect.'\n";
 

@@ -26,7 +26,9 @@ enum EngineTuning {
         let d = UserDefaults.standard
         if [30, 120].contains(d.integer(forKey: refreshKey)) { env["HV_HZ"] = String(d.integer(forKey: refreshKey)) }
         if d.bool(forKey: superblocksKey) { env["HV_SUPERBLOCKS"] = "1" } else { unsetenv("HV_SUPERBLOCKS") }
-        if d.bool(forKey: wfiSpinKey) { env["HV_WFI_SPIN"] = "50" }
+        // On unless turned off: an app opening is thousands of messages between macOS's processes, each a CPU
+        // waking another, and waking a sleeping host thread takes far longer than the 50 µs watched for first.
+        if d.object(forKey: wfiSpinKey) as? Bool ?? true { env["HV_WFI_SPIN"] = "50" }
         if d.object(forKey: fastFlushKey) as? Bool == false { env["HV_FLUSH"] = "0" }
         if d.bool(forKey: statsKey) { env["HV_STATS"] = "10" }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

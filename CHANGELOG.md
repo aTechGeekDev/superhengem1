@@ -28,6 +28,17 @@ Every change keeps its original author in the git history.
 - **iPad screen sizes:** a new *Fastest* size, 1440×1080 on a 4:3 iPad (44% fewer pixels than Fit,
   which macOS draws with the emulated CPUs), next to Retina, Fit, Performance (1600×1200) and 16:9.
   With the sharp upscale, Performance and Fastest stay readable on the 12.9-inch.
+- **Lighter macOS goes further.** The command (Details > Lighter macOS) now also turns off
+  scrolling, Finder, Quick Look, Mission Control and Launchpad animations, and, with the Mac's
+  password once, the background work that competes with the app being opened: Spotlight indexing
+  (mds_stores and mdworker reading every changed file), Time Machine, automatic update checks and
+  downloads, App Store auto-updates and Power Nap. The script's comment promised the system part
+  before; it never did it. Apps still open from Launchpad, the Dock and Finder. The undo command
+  puts all of it back.
+- **Quicker wake from idle is on by default.** Opening an app is thousands of messages between
+  macOS's processes, each one CPU waking another, and waking a sleeping host thread takes far longer
+  than the 50 µs an idle CPU now watches for work first. It costs some battery; Settings >
+  Performance turns it off.
 - **CPUs:** Mac settings say when a Mac has more CPUs than the chip has performance cores (4 on an
   M1): the rest run on efficiency cores and the others wait for them.
 - The renderer reads `HV_PVG_TALLY` and the surface dump settings once, not per resource of every
