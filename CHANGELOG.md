@@ -4,6 +4,16 @@ This fork collects the fixes from the community forks of [Leviidev/Henge](https:
 into one build, with a few additions, aimed above all at iPad (tested hardware: iPad Pro M4).
 Every change keeps its original author in the git history.
 
+## 0.2.1 (106)
+
+- **No more Face ID prompts from the Mac's Apple Account.** macOS keeps trying to sign in to an Apple
+  Account (its widgets, Launchpad, iCloud and the App Store start it), which fails under Henge; each
+  try made Apple ask the account's trusted devices to approve it, the iPad running Henge included,
+  with Face ID ("iCloud storage"). Henge's DNS now answers "no such name" for Apple's account sign-in
+  hosts (gsa, gsas, idmsa, appleid and setup.icloud), so the Mac never reaches them and nothing asks;
+  even after the DNS proxy has stepped aside for libslirp. Settings > Apple Account > *Keep the Mac
+  off my Apple Account* (on); `HV_DNS_BLOCK_APPLE_ACCOUNT=0` lets it through.
+
 ## 0.2.1 (105)
 
 - Settings > Performance > *High priority CPUs (experimental)*: the Mac's CPU threads at

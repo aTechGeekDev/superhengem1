@@ -11,6 +11,7 @@ enum EngineTuning {
     static let statsKey = "henge.perf.engineStats"
     static let sharpScalingKey = "henge.display.sharpScaling"
     static let highPriorityKey = "henge.perf.highPriority"
+    static let blockAppleAccountKey = "henge.mac.blockAppleAccount"
     static let gpuOrderingKey = "henge.display.gpuOrdering"
 
     static let defaults: [String: String] = [
@@ -34,6 +35,8 @@ enum EngineTuning {
         if d.object(forKey: wfiSpinKey) as? Bool ?? true { env["HV_WFI_SPIN"] = "50" }
         if d.object(forKey: fastFlushKey) as? Bool == false { env["HV_FLUSH"] = "0" }
         if d.bool(forKey: statsKey) { env["HV_STATS"] = "10" }
+        // On unless turned off: the Mac never reaches Apple's account sign-in, so Apple never asks this iPad to approve it.
+        env["HV_DNS_BLOCK_APPLE_ACCOUNT"] = d.object(forKey: blockAppleAccountKey) as? Bool == false ? "0" : "1"
         // The Mac's CPUs at the GPU replay's priority (user-interactive), so iOS keeps them on the performance cores.
         if d.bool(forKey: highPriorityKey) { env["HV_QOS"] = "ui" } else { unsetenv("HV_QOS") }
         // Display changes of 0.2.1, each switchable to tell which one a drawing problem comes from.

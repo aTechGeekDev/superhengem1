@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage(EngineTuning.wfiSpinKey) private var wfiSpin = true
     @AppStorage(EngineTuning.superblocksKey) private var superblocks = false
     @AppStorage(EngineTuning.highPriorityKey) private var highPriority = false
+    @AppStorage(EngineTuning.blockAppleAccountKey) private var blockAppleAccount = true
     @AppStorage(EngineTuning.statsKey) private var engineStats = false
     @AppStorage(EngineTuning.sharpScalingKey) private var sharpScaling = true
     @AppStorage(EngineTuning.gpuOrderingKey) private var gpuOrdering = true
@@ -133,6 +134,12 @@ struct SettingsView: View {
                     Toggle("Sharp scaling", isOn: $sharpScaling)
                     Toggle("Strict GPU ordering", isOn: $gpuOrdering)
                     Text("Sharp scaling draws the Mac's screen at this screen's own resolution with a sharp filter; off, iPadOS stretches it, softer. Strict GPU ordering makes each piece of the Mac's drawing wait for the one before, which keeps glass panels such as Control Center clean; off is a little faster on the GPU. If something draws wrongly, turn one off at a time to find which. Applies the next time a Mac starts.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                .listRowBackground(Desk.card)
+                Section("Apple Account") {
+                    Toggle("Keep the Mac off my Apple Account", isOn: $blockAppleAccount)
+                    Text("A Mac in Henge can't sign in to an Apple Account, but macOS keeps trying (its widgets, Launchpad, iCloud and the App Store), and each try makes Apple ask your own devices, this \(Device.name) included, to approve it with Face ID. On, the Mac can't reach Apple's sign-in servers at all, so nothing asks. Also sign out on the Mac: System Settings, your name, Sign Out. Applies the next time a Mac starts.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .listRowBackground(Desk.card)

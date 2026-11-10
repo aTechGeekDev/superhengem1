@@ -43,6 +43,7 @@ typedef struct {
     char name[1025];
     Answer ans[MAX_ANSWERS];
     int nans, nodata, failed, done;
+    int blocked; /* an Apple Account sign-in host: "no such name", nothing asked of the resolver */
 } Query;
 
 static atomic_int inflight, unanswered_in_a_row;
@@ -51,6 +52,29 @@ static atomic_ullong answered, handed_back, timed_out;
 static atomic_int stopping;
 static pthread_mutex_t lifecycle_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t lifecycle_cv = PTHREAD_COND_INITIALIZER;
+
+/* Apple Account sign-in from the virtual Mac (HV_DNS_BLOCK_APPLE_ACCOUNT, on unless 0). Each sign-in or token
+   refresh the Mac tries with someone's Apple Account goes to these, and Apple then asks that person's trusted
+   devices to approve it: the iPad running Henge asked for Face ID ("iCloud storage") whenever macOS opened its
+   widgets or Launchpad. Signing in to an Apple Account inside the Mac fails under Henge anyway (README). With
+   these names unresolvable it never reaches Apple, and nothing asks. Read at each network start. */
+static const char *const apple_account_hosts[] = {
+    "gsa.apple.com", "gsas.apple.com", "idmsa.apple.com", "appleid.apple.com", "appleid.cdn-apple.com", "setup.icloud.com",
+};
+static atomic_int block_apple_account = 1;
+
+static int blocked_name(const char *name) {
+    if (!atomic_load(&block_apple_account)) return 0;
+    size_t n = strlen(name);
+    while (n && name[n - 1] == '.') n--;
+    for (size_t i = 0; i < sizeof apple_account_hosts / sizeof *apple_account_hosts; i++) {
+        size_t h = strlen(apple_account_hosts[i]);
+        if (n == h ? !strncasecmp(name, apple_account_hosts[i], h)
+                   : n > h && name[n - h - 1] == '.' && !strncasecmp(name + n - h, apple_account_hosts[i], h))
+            return 1;
+    }
+    return 0;
+}
 
 static void lookup_finished(void) {
     pthread_mutex_lock(&lifecycle_mu);
@@ -66,6 +90,9 @@ void hv_dns_proxy_start(void) {
     atomic_store(&handed_back, 0);
     atomic_store(&timed_out, 0);
     atomic_store(&unanswered_in_a_row, 0);
+    const char *b = getenv("HV_DNS_BLOCK_APPLE_ACCOUNT");
+    atomic_store(&block_apple_account, !b || atoi(b) != 0);
+    fprintf(stderr, "hengevm: dns: Apple Account sign-in from the Mac %s\n", atomic_load(&block_apple_account) ? "blocked" : "allowed");
     pthread_mutex_unlock(&lifecycle_mu);
 }
 
@@ -222,6 +249,15 @@ static void *lookup(void *arg) {
         lookup_finished();
         return NULL;
     }
+    if (q->blocked) {
+        static atomic_int told;
+        if (atomic_fetch_add(&told, 1) < 8) fprintf(stderr, "hengevm: dns: %s blocked (Apple Account sign-in)\n", q->name);
+        reply(q, 3); /* NXDOMAIN */
+        atomic_fetch_add(&answered, 1);
+        free(q);
+        lookup_finished();
+        return NULL;
+    }
     DNSServiceRef ref = NULL;
     DNSServiceErrorType err = DNSServiceQueryRecord(&ref, kDNSServiceFlagsReturnIntermediates, 0, q->name, q->qtype,
                                                     q->qclass, on_record, q);
@@ -268,7 +304,7 @@ int hv_dns_proxy_on(void) {
 }
 
 int hv_dns_proxy_take(const uint8_t *p, uint32_t len, HvDnsSend send) {
-    if (!hv_dns_proxy_on() || len < 14 + 20 + 8 + 12 || p[12] != 0x08 || p[13] != 0x00) return 0;
+    if (len < 14 + 20 + 8 + 12 || p[12] != 0x08 || p[13] != 0x00) return 0;
     const uint8_t *ip = p + 14;
     uint32_t ihl = (uint32_t)(ip[0] & 15) * 4;
     if ((ip[0] >> 4) != 4 || ihl < 20 || ip[9] != 17) return 0;
@@ -289,6 +325,12 @@ int hv_dns_proxy_take(const uint8_t *p, uint32_t len, HvDnsSend send) {
     int local = 0;
     uint32_t off = read_name(dns, dlen, 12, q->name, sizeof q->name, &local);
     if (!off || off + 4 > dlen || local) {
+        free(q);
+        return 0;
+    }
+    /* Blocked names are answered here even when the proxy has stepped aside for libslirp. */
+    q->blocked = blocked_name(q->name);
+    if (!q->blocked && !hv_dns_proxy_on()) {
         free(q);
         return 0;
     }
