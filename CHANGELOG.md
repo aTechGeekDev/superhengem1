@@ -4,6 +4,21 @@ This fork collects the fixes from the community forks of [Leviidev/Henge](https:
 into one build, with a few additions, aimed above all at iPad (tested hardware: iPad Pro M4).
 Every change keeps its original author in the git history.
 
+## 0.2.1 (107)
+
+- **Trackpad scrolling, fixed in three ways.** macOS reads a finger's speed as distance over the time
+  between reports, and smooth scrolling's stamps misled it: the fingers lifted 50 ms after the last
+  movement, stamped then, so macOS saw them stop first and never coasted; they landed and moved 2 ms
+  apart, so every scroll began with a jump (and every re-grip at the pad's edge); and steady scrolling
+  lost movements, as a filter for GameController repeating the other axis dropped any movement the
+  same size as the one before. Now each axis is read on its own handler, the fingers land and start
+  moving from the next movement, they lift a frame after the last one (after 90 ms without movement,
+  so a slow scroll isn't cut up), and each gesture is summarised in the log (20 of them) for tuning.
+- **Noise in place of text (the menu bar clock's new digits).** A texture first used before the guest
+  had written its pages was marked up to date with nothing copied, so the GPU showed whatever its
+  memory held until the guest happened to flag the texture written again. It is now copied once the
+  guest's pages are there.
+
 ## 0.2.1 (106)
 
 - **No more Face ID prompts from the Mac's Apple Account.** macOS keeps trying to sign in to an Apple

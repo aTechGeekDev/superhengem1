@@ -1203,18 +1203,19 @@ static BOOL has_guest_pages(HvObject *o) {
 }
 
 /* Between guest memory and the GPU's own copy, in the layout the guest was told. */
-- (void)page:(HvObject *)o toGuest:(BOOL)down task:(uint32_t)task blit:(id<MTLBlitCommandEncoder> *)blit commandBuffer:(id<MTLCommandBuffer>)cb {
+/* Returns NO only when the guest has no pages behind the object yet, so there was nothing to copy this time. */
+- (BOOL)page:(HvObject *)o toGuest:(BOOL)down task:(uint32_t)task blit:(id<MTLBlitCommandEncoder> *)blit commandBuffer:(id<MTLCommandBuffer>)cb {
     id<MTLBuffer> copy = guest_copy(self, task, o);
-    if (!copy || !has_guest_pages(o)) return;
+    if (!copy || !has_guest_pages(o)) return NO;
     if (o->heap_whole) {
         if (!*blit) order_begin(self, *blit = [cb blitCommandEncoder]);
         NSUInteger bytes = MIN(copy.length, o->heap_whole.length);
         if (down) [*blit copyFromBuffer:o->heap_whole sourceOffset:0 toBuffer:copy destinationOffset:0 size:bytes];
         else [*blit copyFromBuffer:copy sourceOffset:0 toBuffer:o->heap_whole destinationOffset:0 size:bytes];
-        return;
+        return YES;
     }
     id<MTLTexture> tex = o->object;
-    if (!tex || !o->tex_layout || tex.sampleCount > 1 || tex.isFramebufferOnly) return;
+    if (!tex || !o->tex_layout || tex.sampleCount > 1 || tex.isFramebufferOnly) return YES; /* never copied: nothing to wait for */
     NSUInteger faces = tex.textureType == MTLTextureTypeCube || tex.textureType == MTLTextureTypeCubeArray ? 6 : 1;
     if (!*blit) order_begin(self, *blit = [cb blitCommandEncoder]);
     for (uint32_t s = 0; s < o->tex_slices * faces; s++)
@@ -1234,6 +1235,7 @@ static BOOL has_guest_pages(HvObject *o) {
                 [*blit copyFromBuffer:copy sourceOffset:from sourceBytesPerRow:row sourceBytesPerImage:image
                            sourceSize:MTLSizeMake(w, h, d) toTexture:tex destinationSlice:s destinationLevel:m destinationOrigin:MTLOriginMake(0, 0, 0)];
         }
+    return YES;
 }
 
 /* The guest asks to see what the GPU made: {task, count, refs}. */
@@ -2128,8 +2130,12 @@ typedef struct {
         }
         if (res[i * 2 + 1] & 1) o->guest_stale = NO, o->host_valid = NO; /* the guest wrote it */
         if (o->guest_backed && !o->host_valid) {
-            if (!o->guest_stale) [self page:o toGuest:NO task:task blit:&blit commandBuffer:cb];
-            o->host_valid = YES;
+            /* Valid once the guest's bytes are really in it. Used before the guest has pages behind it, it stayed
+               marked valid with nothing copied, so whatever the GPU's memory held showed until the guest happened to
+               flag it written again: noise where text belonged (a menu bar clock's new digits). It is tried again at
+               each use instead. */
+            BOOL done = o->guest_stale ? YES : [self page:o toGuest:NO task:task blit:&blit commandBuffer:cb];
+            if (done) o->host_valid = YES;
         }
         if (res[i * 2 + 1] & 4) sync_after = YES;
     }

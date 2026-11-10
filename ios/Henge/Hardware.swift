@@ -185,6 +185,9 @@ final class HardwareMouse {
     private var scrolling = false
     private var fingerX = 0.0, fingerY = 0.0
     private var lift: DispatchWorkItem?
+    private var lastMoveMs: UInt32 = 0 /* the newest finger report's stamp */
+    private var gestureMoves = 0, gestureRegrips = 0, gestureStart: UInt32 = 0, gesturesLogged = 0
+    private var gestureTotal = (0.0, 0.0)
     private static let scrollFingers: (Int32, Int32) = (12, 13) /* the touchscreen's are 1-5, right-click's 14-15 */
     private static let fingerGap = 900.0 /* about 18 mm apart, as two fingers rest */
     private static let edge = 160.0
@@ -234,6 +237,8 @@ final class HardwareMouse {
             input.rightButton?.pressedChangedHandler = nil
             input.middleButton?.pressedChangedHandler = nil
             input.scroll.valueChangedHandler = nil
+            input.scroll.xAxis.valueChangedHandler = nil
+            input.scroll.yAxis.valueChangedHandler = nil
         }
         mice.removeAll()
     }
@@ -251,6 +256,10 @@ final class HardwareMouse {
         input.rightButton?.pressedChangedHandler = { [weak self] _, _, pressed in self?.button(1, pressed) }
         input.middleButton?.pressedChangedHandler = { [weak self] _, _, pressed in self?.button(2, pressed) }
         input.scroll.valueChangedHandler = { [weak self] _, first, second in self?.scrolled(first, second) }
+        // Smooth scrolling reads each axis on its own: the pad's handler repeats the other axis's last value, and
+        // telling a repeat from a real movement of the same size dropped steady scrolling's movements.
+        input.scroll.yAxis.valueChangedHandler = { [weak self] _, value in self?.axisScrolled(vertical: value, horizontal: 0) }
+        input.scroll.xAxis.valueChangedHandler = { [weak self] _, value in self?.axisScrolled(vertical: 0, horizontal: value) }
     }
 
     /// GameController's Y runs upward. What doesn't make a whole step yet waits for the next move.
@@ -285,10 +294,7 @@ final class HardwareMouse {
         let horizontalChanged = second != lastScrollSecond
         lastScrollFirst = first
         lastScrollSecond = second
-        if smooth && henge_vm_trackpad_ready() != 0 {
-            fingerScroll(vertical: verticalChanged ? first : 0, horizontal: horizontalChanged ? second : 0, raw: (first, second))
-            return
-        }
+        if smoothNow { return } /* axisScrolled has it */
         let mostlyVertical = abs(first) > 2 * abs(second)
         let mostlyHorizontal = abs(second) > 2 * abs(first)
         let verticalRaw = verticalChanged && !mostlyHorizontal ? -first : 0
@@ -312,6 +318,13 @@ final class HardwareMouse {
     /// movement, on the side of the pad they move away from (room for a long swipe), follow every movement, and lift
     /// 50 ms after the last (so macOS sees the speed at lift-off and coasts). One that reaches the pad's edge lifts and
     /// goes down again on the other side, as a hand does. The directions match the wheel's: wheel up is fingers up.
+    private var smoothNow: Bool { smooth && henge_vm_trackpad_ready() != 0 }
+
+    private func axisScrolled(vertical: Float, horizontal: Float) {
+        guard smoothNow else { return }
+        fingerScroll(vertical: vertical, horizontal: horizontal, raw: (vertical, horizontal))
+    }
+
     private func fingerScroll(vertical: Float, horizontal: Float, raw: (Float, Float)) {
         guard vertical.isFinite, horizontal.isFinite, vertical != 0 || horizontal != 0 else { return }
         let configured = UserDefaults.standard.object(forKey: Self.scrollSpeedKey) == nil
@@ -319,30 +332,63 @@ final class HardwareMouse {
         let scale = configured.isFinite ? min(max(configured, 0.1), 1.5) : 0.3
         let k = 40 * scale * (reverse ? -1 : 1) /* sensor units per GameController unit: 12 at the default speed */
         let dx = -Double(horizontal) * k, dy = Double(vertical) * k
-        let ts = Self.nowMs()
-        if !scrolling { beginScroll(dx, dy, ts) }
-        var x = fingerX + dx, y = fingerY + dy
+        /* macOS takes a finger's speed as distance over the time between reports, so the stamps must be honest: a
+           finger that moves the instant it lands, or lifts long after its last move, reads as a flick or as a stop. */
+        var ts = Self.nowMs()
+        if scrolling && Int32(bitPattern: ts &- lastMoveMs) <= 0 { ts = lastMoveMs &+ 1 }
         let half = Self.fingerGap / 2
+        if !scrolling {
+            /* Down now, moving from the next report on: this one's distance would be over no time at all. */
+            beginScroll(dx, dy, ts)
+            lastMoveMs = ts
+            gestureMoves = 0; gestureRegrips = 0; gestureStart = ts; gestureTotal = (0, 0)
+            scheduleLift()
+            return
+        }
+        let x = fingerX + dx, y = fingerY + dy
         if x < Self.edge + half || x > Self.sensorW - Self.edge - half || y < Self.edge || y > Self.sensorH - Self.edge {
-            endScroll(ts)
-            beginScroll(dx, dy, ts &+ 1)
-            x = fingerX + dx
-            y = fingerY + dy
+            /* The edge: lift as a hand does right after its last move, and land again for the next one. */
+            liftFingers(lastMoveMs &+ 4)
+            beginScroll(dx, dy, ts > lastMoveMs &+ 5 ? ts : lastMoveMs &+ 5)
+            lastMoveMs = ts > lastMoveMs &+ 5 ? ts : lastMoveMs &+ 5
+            gestureRegrips += 1
+            scheduleLift()
+            return
         }
         fingerX = x
         fingerY = y
+        lastMoveMs = ts
+        gestureMoves += 1
+        gestureTotal.0 += dx
+        gestureTotal.1 += dy
         let (a, b) = Self.scrollFingers
-        henge_vm_touch(a, 1, Int32(x - half), Int32(y), ts &+ 2)
-        henge_vm_touch(b, 1, Int32(x + half), Int32(y), ts &+ 2)
-        henge_vm_touch_frame(ts &+ 2)
+        henge_vm_touch(a, 1, Int32(x - half), Int32(y), ts)
+        henge_vm_touch(b, 1, Int32(x + half), Int32(y), ts)
+        henge_vm_touch_frame(ts)
         if scrollsLogged < 24 {
             scrollsLogged += 1
             HengeLog.log("input", "scroll raw: \(raw.0), \(raw.1); fingers by \(Int(dx)), \(Int(dy)) to \(Int(x)),\(Int(y))")
         }
+        scheduleLift()
+    }
+
+    /// The fingers lift once movements stop coming, stamped a frame after the last one (when a hand would have
+    /// lifted), so macOS sees the speed they left with and coasts on. Waiting 90 ms first keeps a slow scroll, whose
+    /// movements come further apart, from being cut into many short ones.
+    private func scheduleLift() {
         lift?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.endScroll() }
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.endScroll(self.lastMoveMs &+ 8)
+        }
         lift = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.09, execute: item)
+    }
+
+    private func liftFingers(_ ts: UInt32) {
+        let (a, b) = Self.scrollFingers
+        henge_vm_touch(a, 2, 0, 0, ts)
+        henge_vm_touch(b, 2, 0, 0, ts)
     }
 
     /// Two fingers down where a movement of (dx, dy) has the most room.
@@ -363,10 +409,13 @@ final class HardwareMouse {
         lift = nil
         guard scrolling else { return }
         scrolling = false
-        let (a, b) = Self.scrollFingers
-        let t = ts ?? Self.nowMs()
-        henge_vm_touch(a, 2, 0, 0, t)
-        henge_vm_touch(b, 2, 0, 0, t)
+        let t = ts ?? lastMoveMs &+ 8
+        liftFingers(t)
+        if gesturesLogged < 20 { /* to tune scrolling from a real device's log */
+            gesturesLogged += 1
+            HengeLog.log("input", "scroll gesture: \(gestureMoves) moves over \(Int32(bitPattern: lastMoveMs &- gestureStart)) ms, "
+                         + "by \(Int(gestureTotal.0)),\(Int(gestureTotal.1)) sensor units, \(gestureRegrips) re-grips")
+        }
     }
 
     /// The touch reports' clock: ms of uptime, as UITouch timestamps (the touchscreen's fingers) count.
