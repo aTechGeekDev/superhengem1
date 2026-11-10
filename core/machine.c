@@ -33,6 +33,7 @@ static void knobs_init(void) {
        entries stale, not just the incoming one's). It was worth ~3% on a process-spawn loop; not worth guest memory. */
     if (!getenv("HV_IJC_PAGES")) hv_knob[HV_K_IJCPAGES] = 1;
     if (!getenv("HV_DNS_PROXY")) hv_knob[HV_K_DNSPROXY] = 1;
+    if (!getenv("HV_HOIST_CHECK")) hv_knob[HV_K_HOIST] = 1; /* see init_rest */
 }
 
 int hv_knob_set(HvMachine *m, const char *name, int value) {
@@ -85,7 +86,13 @@ static int init_rest(HvMachine *m) {
     /* On unless asked: the Mac bench (2026-11-08) posted 130-400 raced remote drops/s with it against 710-1370
        without (most walks a drop met were of other pages), and the phone's login storm waits up to 24% of a CPU. */
     hv_knob[HV_K_WALKLOG] = getenv("HV_WALK_LOG") ? atoi(getenv("HV_WALK_LOG")) : 1;
-    if (getenv("HV_HOIST_CHECK")) hv_knob[HV_K_HOIST] = atoi(getenv("HV_HOIST_CHECK"));
+    /* On unless asked (HV_HOIST_CHECK=0): a loop's conditional branch back tests exit_req in the hot part, so once
+       chained the guest's branch goes straight to the loop's top, one taken branch an iteration instead of two (out to
+       the exit's check in the cold part, then back). The test still runs every iteration, before the branch, so a CPU
+       asked to leave does as soon as before. Checked on arm64 Linux under qemu (2026-11-10): test_jit, test_mem and
+       test_mmu as without it; test_bench's JIT times there 12.5 -> 2.5 ms (loop), 4.5 -> 2.1 (memory), 6.9 -> 4.3
+       (jump table), 3.1 -> 2.9 (calls). qemu overstates what a taken branch costs; not yet measured on a device. */
+    hv_knob[HV_K_HOIST] = getenv("HV_HOIST_CHECK") ? atoi(getenv("HV_HOIST_CHECK")) : 1;
     /* On unless asked: a code change used to drop every CPU's whole branch cache (~100/s with JavaScriptCore's JIT
        on the Mac bench, 300-390K refills/s after); now only the page's targets (Mac 2026-11-09: resets 195 -> 2/s,
        a JIT check of 200 recompiled functions correct; bench times the same within noise). */

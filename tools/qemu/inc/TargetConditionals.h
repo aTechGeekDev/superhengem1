@@ -1,0 +1,3 @@
+#include "compat.h"
+#define TARGET_OS_OSX 1
+#define TARGET_OS_IPHONE 0

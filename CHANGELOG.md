@@ -9,6 +9,17 @@ Every change keeps its original author in the git history.
 Updates over 0.2.0 (100) in place: same bundle identifier (com.henge.app), and the Macs, their files and the settings are kept.
 
 ### Faster, and a cleaner picture
+- **Loops run with one jump an iteration, not two (translator).** A loop's conditional branch back
+  has to check whether its CPU was asked to stop (an interrupt, a TLB request); that check sat in the
+  block's cold part, so every iteration jumped out to it and back. It now sits in the hot part, just
+  before the branch (the existing `HV_HOIST_CHECK`, now on), and a chained branch goes straight to the
+  loop's top. The check still runs every iteration, so a CPU stops as soon as before. Under qemu
+  (arm64 Linux) the JIT's benchmark loops ran 2-5x faster (memory loop 4.5 -> 2.1 ms, tight loop
+  12.5 -> 2.5 ms, jump table 6.9 -> 4.3 ms); qemu overstates taken branches, so a device gains less.
+  `HV_HOIST_CHECK=0` in `henge-env.txt` turns it off.
+- **`tools/qemu/run.sh`:** the engine's JIT, memory, MMU and benchmark tests on arm64 Linux under
+  qemu, so translator changes can be checked against native execution without a Mac. Superblocks
+  and grouped accesses were measured there too: no gain, so they stay off.
 - **Engine statistics are off by default.** They were on in every build: each CPU counted into shared
   counters, every dispatcher cache miss walked the guest's page tables a second time to say what
   missed, and every 10 seconds CPU 0 walked the whole 2M-bucket block hash to print a log line, a
