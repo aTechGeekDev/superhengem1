@@ -4,7 +4,9 @@ This fork collects the fixes from the community forks of [Leviidev/Henge](https:
 into one build, with a few additions, aimed above all at iPad (tested hardware: iPad Pro M4).
 Every change keeps its original author in the git history.
 
-## Unreleased
+## 0.2.1 (101)
+
+Updates over 0.2.0 (100) in place: same bundle identifier (com.henge.app), and the Macs, their files and the settings are kept.
 
 ### Faster, and a cleaner picture
 - **Engine statistics are off by default.** They were on in every build: each CPU counted into shared
