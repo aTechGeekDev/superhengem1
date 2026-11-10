@@ -368,6 +368,9 @@ void hv_vm_cpu_qos(void) {
     else if (q && !strcmp(q, "init")) c = QOS_CLASS_USER_INITIATED;
     else if (q && !strcmp(q, "default")) c = QOS_CLASS_DEFAULT;
     if (c != QOS_CLASS_DEFAULT) pthread_set_qos_class_self_np(c, 0);
+    static _Atomic int told;
+    if (!atomic_exchange(&told, 1))
+        fprintf(stderr, "hengevm: guest CPU threads at %s priority\n", c == QOS_CLASS_USER_INTERACTIVE ? "user-interactive" : c == QOS_CLASS_USER_INITIATED ? "user-initiated" : "default");
 }
 
 /* CPUs 1 and up: run whenever PSCI CPU_ON starts them; the machine stops with CPU 0. */

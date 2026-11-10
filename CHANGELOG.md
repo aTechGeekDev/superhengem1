@@ -4,6 +4,15 @@ This fork collects the fixes from the community forks of [Leviidev/Henge](https:
 into one build, with a few additions, aimed above all at iPad (tested hardware: iPad Pro M4).
 Every change keeps its original author in the git history.
 
+## 0.2.1 (105)
+
+- Settings > Performance > *High priority CPUs (experimental)*: the Mac's CPU threads at
+  user-interactive priority, the GPU replay's and presenter's, instead of user-initiated (the
+  existing `HV_QOS=ui`). With every thread busy, iPadOS gives the performance cores to the higher
+  class first, so a Mac CPU could end up on an efficiency core, where it runs at a fraction of the
+  speed and the others wait for it (TLB requests, locks). Off by default until measured on a device;
+  the log says which priority the CPUs got.
+
 ## 0.2.1 (104)
 
 - **Magic Keyboard trackpad scrolls like a Mac's.** Two-finger scrolling went to macOS as mouse-wheel
