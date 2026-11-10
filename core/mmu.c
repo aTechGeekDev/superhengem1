@@ -823,7 +823,7 @@ const uint32_t *hv_mmu_fetch(HvCpu *cpu, uint64_t va, uint64_t *pa, uint32_t *av
         }
     }
     HvWalk w;
-    cpu->m->stats.fetch_walks++;
+    if (cpu->m->stats_interval) cpu->m->stats.fetch_walks++; /* shared by every CPU */
     walk_begin(cpu, va);
     hv_mmu_walk(cpu, va, HV_ACC_EXEC, cpu->el, &w);
     if (!w.fsc) tlb_fill(cpu, va, cpu->el, &w);

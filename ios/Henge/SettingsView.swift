@@ -14,6 +14,7 @@ struct SettingsView: View {
     @AppStorage(EngineTuning.fastFlushKey) private var fastFlush = true
     @AppStorage(EngineTuning.wfiSpinKey) private var wfiSpin = false
     @AppStorage(EngineTuning.superblocksKey) private var superblocks = false
+    @AppStorage(EngineTuning.statsKey) private var engineStats = false
     @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB = JITBootstrap.defaultCodeCacheMB
 
     /// The second footer paragraph: how you click, given the selected input mode.
@@ -121,6 +122,9 @@ struct SettingsView: View {
                 }
                 .listRowBackground(Desk.card)
                 Section("Log") {
+                    Toggle("Engine statistics", isOn: $engineStats)
+                    Text("Writes what the emulated CPUs spend their time on to henge.log every 10 seconds, for reporting a slow Mac. It slows the Mac down a little and pauses it briefly each time, so leave it off otherwise. Applies the next time a Mac starts.")
+                        .font(.footnote).foregroundStyle(.secondary)
                     ShareLink(item: HengeLog.logFileURL) { Label("Share henge.log", systemImage: "square.and.arrow.up") }
                 }
                 .listRowBackground(Desk.card)

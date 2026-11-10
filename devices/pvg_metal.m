@@ -184,6 +184,9 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     double drawable_retry_deadline; /* at most two seconds of retrying an unavailable target */
     uint32_t screen_w, screen_h;
     id<MTLBuffer> test_readback; /* HV_PVG_GPU_TEST: the drawable's pixels for screenshots */
+    /* The worker's copy of the command buffer being decoded: one allocation kept, not a zeroed one per buffer. */
+    uint8_t *cmd_scratch;
+    size_t cmd_scratch_len;
     id<MTLBuffer> readback;
     const char *shot;
     unsigned shots;
@@ -848,7 +851,9 @@ static void sync_iosurface(HvObject *s) {
     /* HV_PVG_HOST_DUMP=prefix (debugging): the host surface as it is just before the guest's pixels go over it,
        for the first few multi-plane surfaces, with its layout in a .txt beside it: did the GPU draw something here
        that this copy throws away? */
-    const char *host_dump = getenv("HV_PVG_HOST_DUMP");
+    static const char *host_dump;
+    static int host_dump_read;
+    if (!host_dump_read) host_dump = getenv("HV_PVG_HOST_DUMP"), host_dump_read = 1; /* every surface of every exec asks */
     static int host_dumped;
     if (host_dump && s->plane_count && host_dumped < 12) {
         char path[1100];
@@ -888,7 +893,9 @@ static void sync_iosurface(HvObject *s) {
         memcpy(base, from, MIN(s->alloc, IOSurfaceGetAllocSize(s->iosurface)));
     }
     IOSurfaceUnlock(s->iosurface, 0, NULL);
-    const char *dump = getenv("HV_PVG_SURFACE_DUMP");
+    static const char *dump;
+    static int dump_read;
+    if (!dump_read) dump = getenv("HV_PVG_SURFACE_DUMP"), dump_read = 1;
     static int dumped;
     if (dump && s->plane_count && dumped < 6) {
         char path[1100];
@@ -2057,12 +2064,14 @@ typedef struct {
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     id<MTLBlitCommandEncoder> blit = nil;
     BOOL sync_after = NO;
+    static int tally = -1; /* HV_PVG_TALLY, read once: this loop runs for every resource of every exec */
+    if (tally < 0) tally = getenv("HV_PVG_TALLY") != NULL;
     for (uint32_t i = 0; i < nres; i++) {
         HvObject *o = [self object:res[i * 2] task:task];
         if (!o) continue;
         if (o->mapped) refresh_pages(self, task, o);
         if (o->surface) sync_iosurface(o->surface);
-        if (getenv("HV_PVG_TALLY") && (o->entry[0] & 0xff) == OBJ_MAPPED_TEXTURE) {
+        if (tally && (o->entry[0] & 0xff) == OBJ_MAPPED_TEXTURE) {
             static uint32_t seen[256];
             uint32_t f = res[i * 2 + 1] & 0xff, key = res[i * 2] & 0xff;
             if (seen[key] != f + 1) {
@@ -2091,9 +2100,14 @@ typedef struct {
         memcpy(&off, bufs + b * 16, 8);
         memcpy(&blen, bufs + b * 16 + 8, 8);
         if (blen > (64u << 20) || blen < 8) continue;
-        NSMutableData *copy = [NSMutableData dataWithLength:(NSUInteger)blen];
-        if (hv_pvg_lite_task_read(lite, task, off, copy.mutableBytes, (uint32_t)blen)) { [self complain:@"command buffer unreadable"]; continue; }
-        const uint8_t *p = copy.bytes, *end = p + blen;
+        if (cmd_scratch_len < blen) { /* grows to the biggest buffer seen; the worker is serial, so one is enough */
+            size_t want = MAX((size_t)blen, cmd_scratch_len * 2);
+            uint8_t *bigger = realloc(cmd_scratch, want);
+            if (!bigger) { [self complain:@"command buffer too big to copy"]; continue; }
+            cmd_scratch = bigger, cmd_scratch_len = want;
+        }
+        if (hv_pvg_lite_task_read(lite, task, off, cmd_scratch, (uint32_t)blen)) { [self complain:@"command buffer unreadable"]; continue; }
+        const uint8_t *p = cmd_scratch, *end = p + blen;
         uint32_t seglen, info;
         memcpy(&seglen, p, 4), memcpy(&info, p + 4, 4);
         p += 8;
@@ -2274,10 +2288,18 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
     "vertex V screen_v(uint i [[vertex_id]], constant float4 &rect [[buffer(0)]]) {\n"
     "  float2 c = float2(i & 1, (i >> 1) & 1);\n"
     "  V o; o.at = float4(rect.xy + c * rect.zw, 0, 1); o.uv = float2(c.x, 1 - c.y); return o; }\n"
-    "fragment float4 screen_plain(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
-    "  return float4(t.sample(s, v.uv).rgb, 1); }\n"
-    "fragment float4 screen_linear(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant uint &mode [[buffer(0)]]) {\n"
-    "  float3 c = saturate(t.sample(s, v.uv).rgb);\n"
+    /* d: a quarter of an output pixel in texture coordinates when the screen is drawn smaller than the Mac's
+       (a phone: 1920 pixels onto ~1200), else 0. Four bilinear taps over the output pixel's footprint, a box
+       filter: one tap (or Core Animation shrinking the whole frame) skips source pixels, so text and 1-pixel
+       lines shimmer and break up as things move. */
+    "static float3 screen_tap(texture2d<float> t, sampler s, float2 uv, float2 d) {\n"
+    "  if (d.x == 0) return t.sample(s, uv).rgb;\n"
+    "  return 0.25 * (t.sample(s, uv + float2(-d.x, -d.y)).rgb + t.sample(s, uv + float2(d.x, -d.y)).rgb +\n"
+    "                 t.sample(s, uv + float2(-d.x, d.y)).rgb + t.sample(s, uv + float2(d.x, d.y)).rgb); }\n"
+    "fragment float4 screen_plain(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float2 &d [[buffer(1)]]) {\n"
+    "  return float4(screen_tap(t, s, v.uv, d), 1); }\n"
+    "fragment float4 screen_linear(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant uint &mode [[buffer(0)]], constant float2 &d [[buffer(1)]]) {\n"
+    "  float3 c = saturate(screen_tap(t, s, v.uv, d));\n"
     "  if (mode == 1) c = select(1.055 * powr(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308);\n"
     "  return float4(c, 1); }\n"
     "fragment float4 screen_cursor(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
@@ -2325,6 +2347,27 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
         if (cp.on) cp_log_layer(self, target);
     }
     return YES;
+}
+
+/* The drawable's size: the Mac's screen, or the layer's own pixels when those are fewer (a phone shows a 1920-wide
+   Mac in ~1200 pixels), so the shader filters the shrink instead of the compositor sampling it. Same shape as the
+   Mac's screen, as the layer fits it by aspect. HV_PVG_SCALE=native: always the Mac's size (as before). The colour
+   probe and the GPU test read the drawable back at the Mac's size, so they keep it too. */
+static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
+    static int native = -1;
+    if (native < 0) {
+        const char *s = getenv("HV_PVG_SCALE");
+        native = (s && !strcmp(s, "native")) || getenv("HV_PVG_GPU_TEST") || getenv("HV_COLOR_PROBE");
+    }
+    CGSize full = CGSizeMake(W, H);
+    if (native || !W || !H) return full;
+    CGSize b = target.bounds.size;
+    CGFloat scale = target.contentsScale;
+    double pw = b.width * scale, ph = b.height * scale;
+    if (pw < 64 || ph < 64) return full; /* not laid out yet */
+    double f = MIN(pw / W, ph / H);
+    if (f >= 0.95) return full; /* the same size, near enough, or bigger (zoomed in, an external display) */
+    return CGSizeMake(MAX(64.0, floor(W * f + 0.5)), MAX(64.0, floor(H * f + 0.5)));
 }
 
 /* The display, drawn by the GPU. Waiting for a drawable can take until the screen's next
@@ -2417,7 +2460,7 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             if (changed) continue;
             return;
         }
-        CGSize want = CGSizeMake(W, H);
+        CGSize want = present_size(target, W, H);
         if (!CGSizeEqualToSize(target.drawableSize, want)) {
             [CATransaction begin];
             [CATransaction setDisableActions:YES];
@@ -2485,6 +2528,9 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
         [e setVertexBytes:rect length:sizeof rect atIndex:0];
         [e setFragmentTexture:tex atIndex:0];
         [e setFragmentSamplerState:screen_sampler atIndex:0];
+        BOOL shrunk = want.width < W;
+        float step[2] = {shrunk ? 0.25f / (float)want.width : 0, shrunk ? 0.25f / (float)want.height : 0};
+        [e setFragmentBytes:step length:sizeof step atIndex:1];
         if (half) {
             uint32_t half_mode = (uint32_t)hv_half_mode_get();
             [e setFragmentBytes:&half_mode length:sizeof half_mode atIndex:0];
@@ -2501,7 +2547,9 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             [e setVertexBytes:r length:sizeof r atIndex:0];
             [e setFragmentTexture:ctex atIndex:0];
             NSNumber *sharpSetting = [[NSUserDefaults standardUserDefaults] objectForKey:@"henge.cursor.sharp"];
-            [e setFragmentSamplerState:sharpSetting && !sharpSetting.boolValue ? screen_sampler : cursor_sampler atIndex:0];
+            /* Nearest sampling at a shrunk, non-integer size drops rows and columns of the pointer unevenly. */
+            BOOL sharp = !(sharpSetting && !sharpSetting.boolValue) && !shrunk;
+            [e setFragmentSamplerState:sharp ? cursor_sampler : screen_sampler atIndex:0];
             [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
         }
         [e endEncoding];
@@ -2703,6 +2751,7 @@ void hv_pvg_metal_destroy(HvPvgMetal *m) {
             free(r->frame); r->frame = NULL;
             free(r->base); r->base = NULL;
             free(r->cursor); r->cursor = NULL;
+            free(r->cmd_scratch); r->cmd_scratch = NULL; r->cmd_scratch_len = 0;
             for (NSValue *old in r->retired_frames) free(old.pointerValue);
             r->retired_frames = nil;
             free(cp.pend_src); cp.pend_src = NULL;

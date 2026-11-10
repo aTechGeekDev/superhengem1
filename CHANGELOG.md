@@ -6,6 +6,28 @@ Every change keeps its original author in the git history.
 
 ## Unreleased
 
+### Faster, and a cleaner picture
+- **Engine statistics are off by default.** They were on in every build: each CPU counted into shared
+  counters, every dispatcher cache miss walked the guest's page tables a second time to say what
+  missed, and every 10 seconds CPU 0 walked the whole 2M-bucket block hash to print a log line, a
+  regular hitch. Settings > Log > *Engine statistics* (or `HV_STATS=10` in `henge-env.txt`) turns
+  them back on for a report.
+- **No shared counters on the hot path.** Every guest CPU wrote the same cache lines on every
+  dispatcher entry (the block count and a recent-blocks ring) and on every exception and return
+  (an exception ring), so those lines moved between cores hundreds of thousands of times a second.
+  The block count is now added in batches of 256 from each CPU's own state, and the debug rings are
+  kept only with stats, `HV_JIT_POISON`, log level 2 or the new `HV_DEBUG_RINGS=1`.
+- **Sharper screen on iPhone.** A 1920-pixel Mac shown in a phone's ~1200 pixels was drawn full size
+  and squeezed by Core Animation, which skips source pixels: text looked jagged and 1-pixel lines
+  shimmered as things moved. The presenter now draws at the layer's own pixel size and filters the
+  shrink itself (four bilinear taps per pixel, a box filter), which also leaves the compositor less
+  to read. Zoomed in, on an iPad that fits the Mac 1:1, and on an external display nothing changes.
+  `HV_PVG_SCALE=native` brings back the old way.
+- The renderer reads `HV_PVG_TALLY` and the surface dump settings once, not per resource of every
+  exec, and keeps one buffer for the guest's command buffers instead of a zeroed allocation each.
+- The session no longer resets its screen layer's colour space every second (SwiftUI's update ran
+  with each status refresh), and copies the log only while Details is open.
+
 ### The screen is a Magic Trackpad 2
 - The session's trackpad is no longer a relative mouse: the engine presents it to the Mac as
   a Magic Trackpad 2 (Apple's vendor multitouch format) on the xHCI USB bus, so the guest's

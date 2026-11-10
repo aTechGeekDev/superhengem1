@@ -126,8 +126,16 @@ private struct GPUScreen: UIViewRepresentable {
         }
 
         private func attachIfReady() {
-            guard window != nil, bounds.width > 0, bounds.height > 0,
+            guard let window, bounds.width > 0, bounds.height > 0,
                   let metal = layer as? CAMetalLayer else { return }
+            // The engine draws the Mac's screen at this layer's own pixel size when that is smaller, filtering
+            // the shrink itself (sharper text than the compositor squeezing a 1920-pixel frame): it needs the
+            // real scale of the screen this view is on, which may be an external display's.
+            let scale = window.screen.scale
+            if metal.contentsScale != scale {
+                metal.contentsScale = scale
+                if attached { display.refresh(id) }
+            }
             if !attached {
                 attached = true
                 lastSize = bounds.size
@@ -149,8 +157,12 @@ private struct GPUScreen: UIViewRepresentable {
         let metalLayer = view.layer as! CAMetalLayer
         // The guest's display profile is sRGB, and the presenter writes sRGB
         // values. A nil colorspace skips matching on wide-gamut iPad screens.
-        metalLayer.colorspace = matchScreenColors ? Self.srgb : nil
-        view.alpha = CGFloat(min(max(brightness, 0.4), 1))
+        // Only on a change: SwiftUI calls this whenever the session's state does (every second), and
+        // setting a layer's colorspace has it convert its frames again.
+        let space = matchScreenColors ? Self.srgb : nil
+        if metalLayer.colorspace != space { metalLayer.colorspace = space }
+        let alpha = CGFloat(min(max(brightness, 0.4), 1))
+        if view.alpha != alpha { view.alpha = alpha }
     }
 
     func makeUIView(context: Context) -> Screen {

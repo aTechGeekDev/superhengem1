@@ -109,6 +109,7 @@ static int init_rest(HvMachine *m) {
     m->stop_pc = ~0ull;
     m->stop_pc2 = ~0ull;
     m->chain = 1;
+    m->rings = getenv("HV_DEBUG_RINGS") != NULL;
     m->slots = calloc(m->max_slots, sizeof *m->slots);
     m->slot_site = calloc(m->max_slots, sizeof *m->slot_site);
     m->slot_stub = calloc(m->max_slots, sizeof *m->slot_stub);

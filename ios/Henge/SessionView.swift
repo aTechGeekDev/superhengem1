@@ -185,7 +185,7 @@ struct SessionView: View {
             VolumeClicks.shared.releaseButtons()
         }
         .onChange(of: showDetails) { showing in
-            if showing { HardwareKeys.releaseAll(); StickyKeys.shared.releaseAll() }
+            if showing { log = Array(HengeLog.recentLines(200)); HardwareKeys.releaseAll(); StickyKeys.shared.releaseAll() }
         }
         .onChange(of: confirmStop) { showing in
             if showing { HardwareKeys.releaseAll(); StickyKeys.shared.releaseAll() }
@@ -631,7 +631,7 @@ struct SessionView: View {
             framesOut = henge_vm_net_frames(1)
             framesIn = henge_vm_net_frames(0)
             helperRunning = Sharing.helperRunning
-            log = Array(HengeLog.recentLines(200))
+            if showDetails { log = Array(HengeLog.recentLines(200)) } // only shown there: no main-thread churn otherwise
             let heat = ProcessInfo.processInfo.thermalState
             if heat.rawValue != thermalState.rawValue {
                 thermalState = heat

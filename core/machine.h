@@ -207,6 +207,7 @@ typedef struct HvPerCpu {
     uint32_t ijc_seq;            /* odd while it checks a block's mapping in its TLB and caches it (hv_ijc_fill_checked) */
     uint32_t thread;             /* its host thread (mach_port_t), for --stats: is a CPU waited for running at all */
     uint8_t phase;               /* for --stats, what a CPU others wait on is doing: HV_PHASE_* */
+    uint32_t blocks_pending;     /* blocks entered and not yet added to stats.blocks (dispatch.c, BLOCK_BATCH) */
     HvTlbStash stash[HV_STASHES];
     uint64_t stash_clock;
 } HvPerCpu;
@@ -285,10 +286,18 @@ typedef struct HvMachine {
     pthread_cond_t big_cv;
     uint64_t big_next, big_serving;
     int stats_interval;  /* seconds between --stats lines, 0 = off */
+    int rings;           /* HV_DEBUG_RINGS: keep the recent-block and exception rings with stats off (see hv_debug_rings) */
     /* --profile: host PCs of the CPU thread sampled every millisecond, drained by the stats line. */
     uint64_t *prof;
     uint32_t prof_head, prof_tail;
 } HvMachine;
+
+/* The recent-block and exception/ERET rings (HvStats.recent, elchg) are for bug reports only, and every CPU writes
+   them on every dispatcher entry and exception: one shared cache line bouncing between cores. Kept only while
+   stats, poisoning, verbose logging or HV_DEBUG_RINGS ask for them. */
+static inline int hv_debug_rings(const struct HvMachine *m) {
+    return m->rings || m->stats_interval || m->gen_checks || m->log >= 2;
+}
 
 static inline uint32_t hv_block_hash(uint64_t va, uint64_t pa, uint32_t flags) {
     uint64_t h = (va >> 2) ^ (pa >> 2) * 0x9e3779b97f4a7c15ull ^ flags;

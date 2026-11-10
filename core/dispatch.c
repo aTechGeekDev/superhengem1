@@ -361,7 +361,7 @@ static uint32_t helper(HvCpu *cpu, const HvHelperInfo *info_in) {
         reg_hist[(info->insn >> 5) & 0xffff] += info->op == HV_OP_MRS ? 1 : 1ull << 32;
     switch (info->op) {
     case HV_OP_MEM:
-        cpu->m->stat_slow_mem++;
+        if (cpu->m->ncpus <= 1 || cpu->m->stats_interval) cpu->m->stat_slow_mem++; /* shared: tests and stats only */
         if (cpu->m->stats_interval) { /* --stats: which kinds of access take the slow path */
             HvMemOp op;
             if (hv_mem_decode(info->insn, &op) == 0 && op.kind < 12) cpu->m->stats.slow_kind[op.kind]++;
@@ -824,8 +824,18 @@ static void chain(HvMachine *m, uint64_t *slot, HvBlock *b) {
 
 static int run_loop(HvCpu *cpu, int one);
 
+/* Blocks entered on this thread not yet added to m->stats.blocks: every CPU adding 1 to one shared word on every
+   dispatcher entry kept that cache line moving between cores. Added in batches, and whatever is left on the way out. */
+#define BLOCK_BATCH 256
+static void blocks_flush(HvCpu *cpu) {
+    HvPerCpu *p = cpu->pc_state;
+    if (p && p->blocks_pending) __atomic_add_fetch(&cpu->m->stats.blocks, p->blocks_pending, __ATOMIC_RELAXED);
+    if (p) p->blocks_pending = 0;
+}
+
 static int run(HvCpu *cpu, int one) {
     int r = run_loop(cpu, one);
+    blocks_flush(cpu);
     park(cpu);
     hv_self = NULL;
     return r;
@@ -1094,7 +1104,7 @@ static int run_loop(HvCpu *cpu, int one) {
         prev_pc = cpu->pc;
         prev_b = b;
         if (m->stats_interval) m->stats.why[why]++;
-        m->stats.recent[m->stats.nrecent++ & 15] = cpu->pc | cpu->el;
+        if (hv_debug_rings(m)) m->stats.recent[m->stats.nrecent++ & 15] = cpu->pc | cpu->el;
         if (why == 5 && m->stats_interval) {
             int kind = 6;
             /* A plain walk: fetching could raise an abort in the guest. */
@@ -1116,8 +1126,8 @@ static int run_loop(HvCpu *cpu, int one) {
         cpu->exit_reason = HV_EXIT_BRANCH;
         cpu->last_stub = 0;
         cpu->icount++;
-        m->stats.blocks++;
-        if (m->stats_interval && cpu->index == 0 && (m->stats.blocks & 0xffff) == 0) print_stats(cpu, 0);
+        if (++cpu->pc_state->blocks_pending >= BLOCK_BATCH) blocks_flush(cpu);
+        if (m->stats_interval && cpu->index == 0 && (cpu->icount & 0xffff) == 0) print_stats(cpu, 0);
         if (m->gen_checks && ((uint64_t)(b->code - m->jit.base) >= m->jit.used || b->jit_gen != __atomic_load_n(&m->jit_gen, __ATOMIC_SEQ_CST)))
             fprintf(stderr, "hengevm: cpu %u entering %p (rx+%llx, used %llx) for va %llx: block gen %u, now %u, maker %u\n", cpu->index, (void *)b->code, (unsigned long long)(b->code - m->jit.base) * 4, (unsigned long long)m->jit.used * 4, (unsigned long long)b->va, b->jit_gen, m->jit_gen, b->maker);
         hv_enter(cpu, b->code);

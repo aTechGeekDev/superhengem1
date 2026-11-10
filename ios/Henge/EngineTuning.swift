@@ -8,6 +8,7 @@ enum EngineTuning {
     static let superblocksKey = "henge.perf.superblocks"
     static let wfiSpinKey = "henge.perf.wfiSpin"
     static let fastFlushKey = "henge.perf.fastFlush"
+    static let statsKey = "henge.perf.engineStats"
 
     static let defaults: [String: String] = [
         // 60, not 120: every frame macOS draws is emulated and replayed, so 120 Hz
@@ -15,7 +16,9 @@ enum EngineTuning {
         "HV_HZ": "60",         // the refresh rate macOS is told its display has
         "HV_WFI_SPIN": "0",    // microseconds an idle CPU watches for work before sleeping
         "HV_FLUSH": "2",       // disk flush: F_BARRIERFSYNC, ordered but without a full fsync
-        "HV_STATS": "10",      // seconds between engine stats lines in the log; 0 = off
+        // Engine statistics off: with them on every CPU counts into shared counters, each dispatcher cache miss
+        // walks the page tables again to say what missed, and every 10 s CPU 0 walks the whole block hash (a hitch).
+        "HV_STATS": "0",       // seconds between engine stats lines in the log; 0 = off
     ]
 
     static func apply() {
@@ -25,6 +28,7 @@ enum EngineTuning {
         if d.bool(forKey: superblocksKey) { env["HV_SUPERBLOCKS"] = "1" } else { unsetenv("HV_SUPERBLOCKS") }
         if d.bool(forKey: wfiSpinKey) { env["HV_WFI_SPIN"] = "50" }
         if d.object(forKey: fastFlushKey) as? Bool == false { env["HV_FLUSH"] = "0" }
+        if d.bool(forKey: statsKey) { env["HV_STATS"] = "10" }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         // GPU command trace: on while Documents/trace-on exists (it is checked every frame, so it can be toggled live).
         env["HV_PVG_TRACE_FILE"] = docs.appendingPathComponent("trace-on").path

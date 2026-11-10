@@ -43,11 +43,11 @@ void hv_pstate_set(HvCpu *cpu, uint64_t spsr) {
 }
 
 void hv_take_exception(HvCpu *cpu, int type, uint32_t esr, uint64_t far, int set_far, uint64_t ret) {
-    if (type == HV_EXC_SYNC) cpu->m->stats.exceptions++;
-    else cpu->m->stats.interrupts++;
     uint64_t spsr = hv_pstate_get(cpu);
-    {
+    if (hv_debug_rings(cpu->m)) { /* shared by every CPU: only when someone will read them */
         HvStats *st = &cpu->m->stats;
+        if (type == HV_EXC_SYNC) st->exceptions++;
+        else st->interrupts++;
         uint32_t k = st->nelchg++ & 15;
         st->elchg[k].from = ret, st->elchg[k].spsr = spsr, st->elchg[k].kind = (uint32_t)type, st->elchg[k].el = cpu->el;
         st->elchg[k].to = esr;
@@ -111,7 +111,7 @@ void hv_raise_abort(HvCpu *cpu, int insn, uint64_t va, uint32_t fsc, int wnr, in
 }
 
 void hv_eret(HvCpu *cpu) {
-    if (cpu->m) {
+    if (cpu->m && hv_debug_rings(cpu->m)) {
         HvStats *st = &cpu->m->stats;
         uint32_t k = st->nelchg++ & 15;
         st->elchg[k].from = cpu->pc, st->elchg[k].to = cpu->elr_el1, st->elchg[k].spsr = cpu->spsr_el1;
