@@ -2338,7 +2338,22 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
        (a phone: 1920 pixels onto ~1200), else 0. Four bilinear taps over the output pixel's footprint, a box
        filter: one tap (or Core Animation shrinking the whole frame) skips source pixels, so text and 1-pixel
        lines shimmer and break up as things move. */
+    /* Drawn bigger than the Mac's screen (an iPad Pro 12.9 shows a 1920x1440 Mac on 2732x2048): Catmull-Rom, a
+       sharp cubic, in nine bilinear taps. Bilinear, which the compositor would use, makes text soft. */
+    "static float3 screen_cubic(texture2d<float> t, sampler s, float2 uv) {\n"
+    "  float2 size = float2(t.get_width(), t.get_height());\n"
+    "  float2 p = uv * size, tc = floor(p - 0.5) + 0.5, f = p - tc;\n"
+    "  float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+    "  float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);\n"
+    "  float2 w12 = w1 + w2, t0 = (tc - 1.0) / size, t3 = (tc + 2.0) / size, t12 = (tc + w2 / w12) / size;\n"
+    "  float3 c = t.sample(s, float2(t0.x, t0.y)).rgb * (w0.x * w0.y) + t.sample(s, float2(t12.x, t0.y)).rgb * (w12.x * w0.y)\n"
+    "           + t.sample(s, float2(t3.x, t0.y)).rgb * (w3.x * w0.y) + t.sample(s, float2(t0.x, t12.y)).rgb * (w0.x * w12.y)\n"
+    "           + t.sample(s, float2(t12.x, t12.y)).rgb * (w12.x * w12.y) + t.sample(s, float2(t3.x, t12.y)).rgb * (w3.x * w12.y)\n"
+    "           + t.sample(s, float2(t0.x, t3.y)).rgb * (w0.x * w3.y) + t.sample(s, float2(t12.x, t3.y)).rgb * (w12.x * w3.y)\n"
+    "           + t.sample(s, float2(t3.x, t3.y)).rgb * (w3.x * w3.y);\n"
+    "  return max(c, 0.0); }\n"
     "static float3 screen_tap(texture2d<float> t, sampler s, float2 uv, float2 d) {\n"
+    "  if (d.x < 0) return screen_cubic(t, s, uv);\n"
     "  if (d.x == 0) return t.sample(s, uv).rgb;\n"
     "  return 0.25 * (t.sample(s, uv + float2(-d.x, -d.y)).rgb + t.sample(s, uv + float2(d.x, -d.y)).rgb +\n"
     "                 t.sample(s, uv + float2(-d.x, d.y)).rgb + t.sample(s, uv + float2(d.x, d.y)).rgb); }\n"
@@ -2395,15 +2410,20 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
     return YES;
 }
 
-/* The drawable's size: the Mac's screen, or the layer's own pixels when those are fewer (a phone shows a 1920-wide
-   Mac in ~1200 pixels), so the shader filters the shrink instead of the compositor sampling it. Same shape as the
-   Mac's screen, as the layer fits it by aspect. HV_PVG_SCALE=native: always the Mac's size (as before). The colour
-   probe and the GPU test read the drawable back at the Mac's size, so they keep it too. */
+/* The drawable's size: the layer's own pixels, in the Mac's screen's shape (the layer fits it by aspect), so the
+   shader does the scaling the compositor would otherwise do with plain bilinear sampling. Shrunk (a phone, an iPad
+   window in Split View or Stage Manager): a box filter, so text doesn't break up. Grown (an iPad Pro 12.9 showing a
+   1920x1440 Mac on its 2732x2048 panel, an external display): a sharp cubic, at most the iPad panel's pixel count
+   (zoomed in, the compositor takes it from there: three drawables of a 4K frame would be 150 MB).
+   HV_PVG_SCALE=native: always the Mac's size (as before); =down: only shrink. The colour probe and the GPU test read
+   the drawable back at the Mac's size, so they keep it too. */
+#define PRESENT_MAX_PIXELS (2732.0 * 2048.0)
 static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
-    static int native = -1;
+    static int native = -1, down_only;
     if (native < 0) {
         const char *s = getenv("HV_PVG_SCALE");
         native = (s && !strcmp(s, "native")) || getenv("HV_PVG_GPU_TEST") || getenv("HV_COLOR_PROBE");
+        down_only = s && !strcmp(s, "down");
     }
     CGSize full = CGSizeMake(W, H);
     if (native || !W || !H) return full;
@@ -2412,7 +2432,13 @@ static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
     double pw = b.width * scale, ph = b.height * scale;
     if (pw < 64 || ph < 64) return full; /* not laid out yet */
     double f = MIN(pw / W, ph / H);
-    if (f >= 0.95) return full; /* the same size, near enough, or bigger (zoomed in, an external display) */
+    if (f >= 0.95 && f <= 1.05) return full; /* the same size, near enough */
+    if (f > 1.05) {
+        if (down_only) return full;
+        double most = sqrt(PRESENT_MAX_PIXELS / ((double)W * H));
+        if (f > most) f = most;
+        if (f <= 1.05) return full;
+    }
     return CGSizeMake(MAX(64.0, floor(W * f + 0.5)), MAX(64.0, floor(H * f + 0.5)));
 }
 
@@ -2580,8 +2606,8 @@ static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
         [e setVertexBytes:rect length:sizeof rect atIndex:0];
         [e setFragmentTexture:tex atIndex:0];
         [e setFragmentSamplerState:screen_sampler atIndex:0];
-        BOOL shrunk = want.width < W;
-        float step[2] = {shrunk ? 0.25f / (float)want.width : 0, shrunk ? 0.25f / (float)want.height : 0};
+        BOOL shrunk = want.width < W, grown = want.width > W;
+        float step[2] = {shrunk ? 0.25f / (float)want.width : grown ? -1.0f : 0, shrunk ? 0.25f / (float)want.height : grown ? -1.0f : 0};
         [e setFragmentBytes:step length:sizeof step atIndex:1];
         if (half) {
             uint32_t half_mode = (uint32_t)hv_half_mode_get();
@@ -2599,8 +2625,9 @@ static CGSize present_size(CAMetalLayer *target, uint32_t W, uint32_t H) {
             [e setVertexBytes:r length:sizeof r atIndex:0];
             [e setFragmentTexture:ctex atIndex:0];
             NSNumber *sharpSetting = [[NSUserDefaults standardUserDefaults] objectForKey:@"henge.cursor.sharp"];
-            /* Nearest sampling at a shrunk, non-integer size drops rows and columns of the pointer unevenly. */
-            BOOL sharp = !(sharpSetting && !sharpSetting.boolValue) && !shrunk;
+            /* Nearest sampling at a non-integer scale doubles some rows and columns of the pointer and not others
+               (the compositor's bilinear scaling smoothed that before the drawable followed the layer's size). */
+            BOOL sharp = !(sharpSetting && !sharpSetting.boolValue) && !shrunk && !grown;
             [e setFragmentSamplerState:sharp ? cursor_sampler : screen_sampler atIndex:0];
             [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
         }

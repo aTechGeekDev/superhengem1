@@ -22,6 +22,23 @@ enum Device {
         return (1600, Int((Double(fit.height) * 5 / 6 / 8).rounded()) * 8)
     }
 
+    /// Fewer pixels still, in the iPad's shape: 1440×1080 on a 4:3 iPad (44% fewer than Fit). macOS draws every
+    /// pixel with the emulated CPUs; the presenter scales it up to the panel with a sharp filter.
+    static var fastestScreen: (width: Int, height: Int) {
+        let fit = fittingScreen
+        return (1440, Int((Double(fit.height) * 3 / 4 / 8).rounded()) * 8)
+    }
+
+    /// The chip's performance cores (4 on an M1). A guest CPU on an efficiency core runs at a fraction of the
+    /// speed, and the others wait for it whenever they need it (TLB shootdowns, locks), so more guest CPUs than
+    /// this is usually slower, not faster.
+    static let performanceCores: Int = {
+        var n: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("hw.perflevel0.physicalcpu", &n, &size, nil, 0) == 0, n > 0 { return Int(n) }
+        return max(ProcessInfo.processInfo.activeProcessorCount / 2, 1)
+    }()
+
     /// The panel itself, on its side: every physical pixel, and its real size in mm so that macOS
     /// sees a Retina density and draws at 2x (looks like half the pixels, sharp as the iPad's own UI).
     /// Every iPad with an M chip is 264 ppi.

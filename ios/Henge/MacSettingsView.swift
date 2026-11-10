@@ -51,11 +51,17 @@ struct MacSettingsView: View {
                 .deskCard()
 
                 DeskHeading("Processors")
-                Stepper(value: $cpus, in: 1...6) {
-                    HStack {
-                        Text("CPUs").font(.system(size: 16))
-                        Spacer()
-                        Text("\(cpus)").font(.system(size: 16, weight: .semibold))
+                VStack(alignment: .leading, spacing: 8) {
+                    Stepper(value: $cpus, in: 1...6) {
+                        HStack {
+                            Text("CPUs").font(.system(size: 16))
+                            Spacer()
+                            Text("\(cpus)").font(.system(size: 16, weight: .semibold))
+                        }
+                    }
+                    if cpus > Device.performanceCores {
+                        Text("This \(Device.name) has \(Device.performanceCores) performance cores. More CPUs than that run on its efficiency cores, and the rest wait for them: usually slower, not faster.")
+                            .font(.system(size: 13)).foregroundStyle(Desk.dim)
                     }
                 }
                 .padding(.horizontal, 17)
@@ -92,6 +98,8 @@ struct MacSettingsView: View {
                             if mac.isRetina { return "retina" }
                             if mac.screen.width == Device.performanceScreen.width,
                                mac.screen.height == Device.performanceScreen.height { return "performance" }
+                            if Device.isPad, mac.screen.width == Device.fastestScreen.width,
+                               mac.screen.height == Device.fastestScreen.height { return "fastest" }
                             if mac.screen.width == 1920, mac.screen.height == 1080 { return "wide" }
                             return "fit"
                         }, set: { choice in
@@ -99,20 +107,23 @@ struct MacSettingsView: View {
                             switch choice {
                             case "retina": break
                             case "performance": (mac.screenWidth, mac.screenHeight) = Device.performanceScreen
+                            case "fastest": (mac.screenWidth, mac.screenHeight) = Device.fastestScreen
                             case "wide": (mac.screenWidth, mac.screenHeight) = (1920, 1080)
                             default: (mac.screenWidth, mac.screenHeight) = Device.fittingScreen
                             }
                             save()
                         })) {
-                            if Device.isPad {
-                                Text("Retina").tag("retina")
-                                Text("Performance").tag("performance")
-                            }
+                            // Sharpest to fastest.
+                            if Device.isPad { Text("Retina").tag("retina") }
                             Text("Fit this \(Device.name)").tag("fit")
+                            if Device.isPad {
+                                Text("Performance").tag("performance")
+                                Text("Fastest").tag("fastest")
+                            }
                             Text("16:9").tag("wide")
                         }
                         .pickerStyle(.segmented)
-                        Text("\(mac.screen.width) × \(mac.screen.height). \(Device.isPad ? "Performance renders about 30% fewer pixels. " : "")Changes apply the next time this Mac starts.")
+                        Text("\(mac.screen.width) × \(mac.screen.height). \(Device.isPad ? "Performance draws about 30% fewer pixels than Fit, Fastest 44% fewer: macOS and its apps run faster, and Henge scales the picture up to the screen with a sharp filter. Retina draws every pixel of the screen and is the slowest. " : "")Changes apply the next time this Mac starts.")
                             .font(.system(size: 13)).foregroundStyle(Desk.dim)
                     }
                     .padding(17)

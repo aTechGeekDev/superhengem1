@@ -17,12 +17,19 @@ Every change keeps its original author in the git history.
   (an exception ring), so those lines moved between cores hundreds of thousands of times a second.
   The block count is now added in batches of 256 from each CPU's own state, and the debug rings are
   kept only with stats, `HV_JIT_POISON`, log level 2 or the new `HV_DEBUG_RINGS=1`.
-- **Sharper screen on iPhone.** A 1920-pixel Mac shown in a phone's ~1200 pixels was drawn full size
-  and squeezed by Core Animation, which skips source pixels: text looked jagged and 1-pixel lines
-  shimmered as things moved. The presenter now draws at the layer's own pixel size and filters the
-  shrink itself (four bilinear taps per pixel, a box filter), which also leaves the compositor less
-  to read. Zoomed in, on an iPad that fits the Mac 1:1, and on an external display nothing changes.
-  `HV_PVG_SCALE=native` brings back the old way.
+- **A sharp picture at any Mac size (tuned for the iPad Pro 12.9).** The Mac's frame was drawn at its
+  own size and Core Animation scaled it to the screen with plain bilinear sampling: a 1920×1440 "Fit"
+  Mac on the 12.9-inch's 2732×2048 panel (1.42×) came out soft, and shrunk ones (a phone, an iPad
+  window in Split View or Stage Manager) jagged and shimmering. The presenter now draws at the
+  layer's own pixels and does the scaling itself: Catmull-Rom (a sharp cubic, nine bilinear taps)
+  going up, a box filter going down. Up to the 12.9-inch panel's pixel count; zoomed in, the
+  compositor takes it from there. `HV_PVG_SCALE=native` brings back the old way, `=down` only
+  shrinks. The pointer is sampled smoothly whenever the frame is scaled.
+- **iPad screen sizes:** a new *Fastest* size, 1440×1080 on a 4:3 iPad (44% fewer pixels than Fit,
+  which macOS draws with the emulated CPUs), next to Retina, Fit, Performance (1600×1200) and 16:9.
+  With the sharp upscale, Performance and Fastest stay readable on the 12.9-inch.
+- **CPUs:** Mac settings say when a Mac has more CPUs than the chip has performance cores (4 on an
+  M1): the rest run on efficiency cores and the others wait for them.
 - The renderer reads `HV_PVG_TALLY` and the surface dump settings once, not per resource of every
   exec, and keeps one buffer for the guest's command buffers instead of a zeroed allocation each.
 - **No more garbage in glass panels (Control Center, menus, notifications).** The guest's GPU work
