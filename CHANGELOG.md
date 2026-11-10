@@ -4,6 +4,13 @@ This fork collects the fixes from the community forks of [Leviidev/Henge](https:
 into one build, with a few additions, aimed above all at iPad (tested hardware: iPad Pro M4).
 Every change keeps its original author in the git history.
 
+## 0.2.1 (103)
+
+- **No Face ID prompt for iCloud when a Mac's settings open.** The page's *Move Out of Henge…* picker
+  was SwiftUI's `.fileMover`, attached to the page all along, and iPadOS reached into iCloud Drive for
+  it (asking for Face ID) every time the page opened. The system's document picker is now made only
+  when that button is tapped.
+
 ## 0.2.1 (102)
 
 - Settings > Display: *Sharp scaling* and *Strict GPU ordering* switches, the two display changes of

@@ -156,10 +156,19 @@ struct MacSettingsView: View {
         .navigationTitle(mac.name)
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear(perform: save)
-        .fileMover(isPresented: $movingExport, file: machines.lastExport) { result in
-            switch result {
-            case .success: machines.lastExport = nil
-            case .failure(let error): machines.lastError = error.localizedDescription
+        // The system's picker, made only when "Move Out of Henge…" is tapped. As .fileMover it hung on the page
+        // all along, and iPadOS reached into iCloud Drive (asking for Face ID) whenever a Mac's settings opened.
+        .sheet(isPresented: $movingExport) {
+            if let folder = machines.lastExport {
+                DocumentMover(url: folder) { result in
+                    movingExport = false
+                    switch result {
+                    case .moved: machines.lastExport = nil
+                    case .cancelled: break
+                    case .failed(let error): machines.lastError = error.localizedDescription
+                    }
+                }
+                .ignoresSafeArea()
             }
         }
         .confirmationDialog("Delete \(mac.name)?", isPresented: $confirmDelete, titleVisibility: .visible) {
@@ -218,5 +227,31 @@ struct MacSettingsView: View {
     private func save() {
         if mac.name.isEmpty { mac.name = "Mac" }
         machines.update(mac)
+    }
+}
+
+/// "Move Out of Henge…": UIDocumentPickerViewController moving the exported folder, made only when shown.
+private struct DocumentMover: UIViewControllerRepresentable {
+    enum Outcome { case moved, cancelled, failed(Error) }
+    let url: URL
+    let done: (Outcome) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(done: done) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: false)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let done: (Outcome) -> Void
+        init(done: @escaping (Outcome) -> Void) { self.done = done }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            done(urls.isEmpty ? .failed(CocoaError(.fileWriteUnknown)) : .moved)
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { done(.cancelled) }
     }
 }
